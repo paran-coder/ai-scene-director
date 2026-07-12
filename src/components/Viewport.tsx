@@ -1,0 +1,515 @@
+import { Grid, Line, OrbitControls, TransformControls } from '@react-three/drei';
+import { Canvas, useFrame, useThree, type RootState } from '@react-three/fiber';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { Euler, Group, Matrix4, MeshDepthMaterial, Quaternion, Vector3 } from 'three';
+import { entityMaskColor } from '../domain/export';
+import { calculateHandLocalPosition, createNeutralPose } from '../domain/pose';
+import { findControllingRelationship } from '../domain/relationships';
+import { resolveSceneAtTime } from '../domain/resolver';
+import type { Entity, JointName, PoseState, Relationship, TransformMode, Vec3 } from '../domain/types';
+import { useEditorStore } from '../store/editorStore';
+
+export type CaptureRenderMode = 'beauty' | 'pose' | 'depth' | 'mask';
+
+export interface ViewportHandle {
+  captureFrame(time: number, mode: CaptureRenderMode): Promise<Blob>;
+}
+
+interface CaptureRequest {
+  id: number;
+  time: number;
+  mode: CaptureRenderMode;
+  resolve(blob: Blob): void;
+  reject(error: Error): void;
+}
+
+function SurfaceMaterial({ color, mode, wireframe = false, emissive = false }: { color: string; mode: CaptureRenderMode; wireframe?: boolean; emissive?: boolean }) {
+  if (mode !== 'beauty') return <meshBasicMaterial color={color} wireframe={wireframe} />;
+  return <meshStandardMaterial color={color} roughness={0.75} wireframe={wireframe} emissive={emissive ? color : '#000000'} emissiveIntensity={emissive ? 0.7 : 0} />;
+}
+
+function Limb({ length, radius, color, mode }: { length: number; radius: number; color: string; mode: CaptureRenderMode }) {
+  return (
+    <mesh position={[0, -length / 2, 0]} castShadow={mode === 'beauty'}>
+      <capsuleGeometry args={[radius, Math.max(0.02, length - radius * 2), 8, 12]} />
+      <SurfaceMaterial color={color} mode={mode} />
+    </mesh>
+  );
+}
+
+function JointHandle({ name, selected, onSelect }: { name: JointName; selected: boolean; onSelect(name: JointName): void }) {
+  return (
+    <mesh
+      scale={selected ? 1.35 : 1}
+      onClick={(event) => {
+        event.stopPropagation();
+        onSelect(name);
+      }}
+    >
+      <sphereGeometry args={[0.055, 14, 10]} />
+      <meshBasicMaterial color={selected ? '#fb923c' : '#22d3ee'} depthTest={false} />
+    </mesh>
+  );
+}
+
+function Humanoid({
+  entity,
+  color,
+  mode,
+  showJoints,
+  selectedJoint,
+  onSelectJoint,
+}: {
+  entity: Entity;
+  color: string;
+  mode: CaptureRenderMode;
+  showJoints: boolean;
+  selectedJoint: JointName | null;
+  onSelectJoint(joint: JointName): void;
+}) {
+  const pose: PoseState = entity.character?.pose ?? createNeutralPose();
+  const handle = (joint: JointName) => showJoints
+    ? <JointHandle name={joint} selected={selectedJoint === joint} onSelect={onSelectJoint} />
+    : null;
+
+  return (
+    <group>
+      <group position={[0, 0.9, 0]} rotation={pose.pelvis}>
+        {handle('pelvis')}
+        <mesh castShadow={mode === 'beauty'}>
+          <boxGeometry args={[0.34, 0.22, 0.22]} />
+          <SurfaceMaterial color={color} mode={mode} />
+        </mesh>
+
+        <group position={[0, 0.18, 0]} rotation={pose.spine}>
+          {handle('spine')}
+          <mesh position={[0, 0.1, 0]} castShadow={mode === 'beauty'}>
+            <boxGeometry args={[0.38, 0.28, 0.22]} />
+            <SurfaceMaterial color={color} mode={mode} />
+          </mesh>
+
+          <group position={[0, 0.25, 0]} rotation={pose.chest}>
+            {handle('chest')}
+            <mesh position={[0, 0.08, 0]} castShadow={mode === 'beauty'}>
+              <boxGeometry args={[0.48, 0.3, 0.25]} />
+              <SurfaceMaterial color={color} mode={mode} />
+            </mesh>
+
+            <group position={[0, 0.24, 0]} rotation={pose.neck}>
+              {handle('neck')}
+              <mesh position={[0, 0.05, 0]} castShadow={mode === 'beauty'}>
+                <cylinderGeometry args={[0.07, 0.08, 0.12, 12]} />
+                <SurfaceMaterial color={color} mode={mode} />
+              </mesh>
+              <group position={[0, 0.15, 0]} rotation={pose.head}>
+                {handle('head')}
+                <mesh position={[0, 0.09, 0]} castShadow={mode === 'beauty'}>
+                  <sphereGeometry args={[0.16, 22, 16]} />
+                  <SurfaceMaterial color={color} mode={mode} />
+                </mesh>
+                {mode === 'beauty' && (
+                  <mesh position={[0, 0.09, -0.145]}>
+                    <boxGeometry args={[0.1, 0.045, 0.025]} />
+                    <meshStandardMaterial color="#292524" />
+                  </mesh>
+                )}
+              </group>
+            </group>
+
+            <group position={[-0.32, 0.16, 0]} rotation={pose.leftShoulder}>
+              {handle('leftShoulder')}
+              <Limb length={0.34} radius={0.075} color={color} mode={mode} />
+              <group position={[0, -0.34, 0]} rotation={pose.leftElbow}>
+                {handle('leftElbow')}
+                <Limb length={0.32} radius={0.065} color={color} mode={mode} />
+                <group position={[0, -0.32, 0]} rotation={pose.leftWrist}>
+                  {handle('leftWrist')}
+                  <mesh position={[0, -0.07, 0]} castShadow={mode === 'beauty'}>
+                    <boxGeometry args={[0.12, 0.15, 0.07]} />
+                    <SurfaceMaterial color={color} mode={mode} />
+                  </mesh>
+                </group>
+              </group>
+            </group>
+
+            <group position={[0.32, 0.16, 0]} rotation={pose.rightShoulder}>
+              {handle('rightShoulder')}
+              <Limb length={0.34} radius={0.075} color={color} mode={mode} />
+              <group position={[0, -0.34, 0]} rotation={pose.rightElbow}>
+                {handle('rightElbow')}
+                <Limb length={0.32} radius={0.065} color={color} mode={mode} />
+                <group position={[0, -0.32, 0]} rotation={pose.rightWrist}>
+                  {handle('rightWrist')}
+                  <mesh position={[0, -0.07, 0]} castShadow={mode === 'beauty'}>
+                    <boxGeometry args={[0.12, 0.15, 0.07]} />
+                    <SurfaceMaterial color={color} mode={mode} />
+                  </mesh>
+                </group>
+              </group>
+            </group>
+          </group>
+        </group>
+
+        <group position={[-0.16, -0.08, 0]} rotation={pose.leftHip}>
+          {handle('leftHip')}
+          <Limb length={0.44} radius={0.09} color={color} mode={mode} />
+          <group position={[0, -0.44, 0]} rotation={pose.leftKnee}>
+            {handle('leftKnee')}
+            <Limb length={0.42} radius={0.075} color={color} mode={mode} />
+            <group position={[0, -0.42, 0]} rotation={pose.leftAnkle}>
+              {handle('leftAnkle')}
+              <mesh position={[0, -0.035, -0.07]} castShadow={mode === 'beauty'}>
+                <boxGeometry args={[0.15, 0.09, 0.29]} />
+                <SurfaceMaterial color={color} mode={mode} />
+              </mesh>
+            </group>
+          </group>
+        </group>
+
+        <group position={[0.16, -0.08, 0]} rotation={pose.rightHip}>
+          {handle('rightHip')}
+          <Limb length={0.44} radius={0.09} color={color} mode={mode} />
+          <group position={[0, -0.44, 0]} rotation={pose.rightKnee}>
+            {handle('rightKnee')}
+            <Limb length={0.42} radius={0.075} color={color} mode={mode} />
+            <group position={[0, -0.42, 0]} rotation={pose.rightAnkle}>
+              {handle('rightAnkle')}
+              <mesh position={[0, -0.035, -0.07]} castShadow={mode === 'beauty'}>
+                <boxGeometry args={[0.15, 0.09, 0.29]} />
+                <SurfaceMaterial color={color} mode={mode} />
+              </mesh>
+            </group>
+          </group>
+        </group>
+      </group>
+    </group>
+  );
+}
+
+function EntityShape({
+  entity,
+  selected,
+  transformMode,
+  selectedJoint,
+  onSelectJoint,
+  renderMode,
+}: {
+  entity: Entity;
+  selected: boolean;
+  transformMode: TransformMode;
+  selectedJoint: JointName | null;
+  onSelectJoint(joint: JointName): void;
+  renderMode: CaptureRenderMode;
+}) {
+  const baseColor = selected
+    ? '#f59e0b'
+    : entity.type === 'character'
+      ? '#64748b'
+      : entity.type === 'prop'
+        ? '#a8a29e'
+        : entity.type === 'camera'
+          ? '#38bdf8'
+          : '#fde047';
+  const color = renderMode === 'pose' ? '#ffffff' : renderMode === 'mask' ? entityMaskColor(entity.id) : baseColor;
+
+  if (entity.type === 'character') {
+    return (
+      <Humanoid
+        entity={entity}
+        color={color}
+        mode={renderMode}
+        showJoints={renderMode === 'beauty' && selected && transformMode === 'pose'}
+        selectedJoint={selectedJoint}
+        onSelectJoint={onSelectJoint}
+      />
+    );
+  }
+
+  if (entity.type === 'camera') {
+    return (
+      <>
+        <mesh><boxGeometry args={[0.8, 0.5, 0.5]} /><SurfaceMaterial color={color} mode={renderMode} wireframe /></mesh>
+        <mesh position={[0, 0, -0.45]} rotation={[Math.PI / 2, 0, 0]}>
+          <coneGeometry args={[0.28, 0.5, 4]} /><SurfaceMaterial color={color} mode={renderMode} wireframe />
+        </mesh>
+      </>
+    );
+  }
+
+  if (entity.type === 'light') {
+    return <mesh><sphereGeometry args={[0.32, 18, 12]} /><SurfaceMaterial color={color} mode={renderMode} wireframe emissive /></mesh>;
+  }
+
+  return <mesh castShadow={renderMode === 'beauty'}><boxGeometry args={[1, 1, 1]} /><SurfaceMaterial color={color} mode={renderMode} /></mesh>;
+}
+
+function SceneEntity({
+  entity,
+  transformMode,
+  relationshipControlled,
+  renderMode,
+  interactive,
+}: {
+  entity: Entity;
+  transformMode: TransformMode;
+  relationshipControlled: boolean;
+  renderMode: CaptureRenderMode;
+  interactive: boolean;
+}) {
+  const objectRef = useRef<Group>(null);
+  const selectedEntityId = useEditorStore((state) => state.selectedEntityId);
+  const selectedJoint = useEditorStore((state) => state.selectedJoint);
+  const selectEntity = useEditorStore((state) => state.selectEntity);
+  const setSelectedJoint = useEditorStore((state) => state.setSelectedJoint);
+  const updateSelectedTransform = useEditorStore((state) => state.updateSelectedTransform);
+  const isSelected = interactive && selectedEntityId === entity.id;
+
+  if (!entity.visible) return null;
+
+  const object = (
+    <group
+      ref={objectRef}
+      position={entity.transform.position}
+      rotation={entity.transform.rotation}
+      scale={entity.transform.scale}
+      onClick={interactive ? (event) => {
+        event.stopPropagation();
+        selectEntity(entity.id);
+      } : undefined}
+    >
+      <EntityShape
+        entity={entity}
+        selected={isSelected}
+        transformMode={transformMode}
+        selectedJoint={interactive ? selectedJoint : null}
+        onSelectJoint={setSelectedJoint}
+        renderMode={renderMode}
+      />
+    </group>
+  );
+
+  if (!interactive || !isSelected || entity.locked || relationshipControlled || transformMode === 'pose') return object;
+
+  const commitTransform = () => {
+    const target = objectRef.current;
+    if (!target) return;
+    if (transformMode === 'translate') updateSelectedTransform('transform.position', target.position.toArray() as Vec3);
+    else if (transformMode === 'rotate') updateSelectedTransform('transform.rotation', [target.rotation.x, target.rotation.y, target.rotation.z]);
+    else if (transformMode === 'scale') updateSelectedTransform('transform.scale', target.scale.toArray() as Vec3);
+  };
+
+  return (
+    <TransformControls mode={transformMode} size={0.8} translationSnap={0.1} rotationSnap={Math.PI / 36} scaleSnap={0.05} onMouseUp={commitTransform}>
+      {object}
+    </TransformControls>
+  );
+}
+
+function ArmIKTarget({ entity, side }: { entity: Entity; side: 'left' | 'right' }) {
+  const targetRef = useRef<Group>(null);
+  const applySelectedArmIK = useEditorStore((state) => state.applySelectedArmIK);
+  const pose = entity.character?.pose ?? createNeutralPose();
+  const localHand = useMemo(() => calculateHandLocalPosition(pose, side), [pose, side]);
+  const matrix = useMemo(() => {
+    const quaternion = new Quaternion().setFromEuler(new Euler(...entity.transform.rotation, 'XYZ'));
+    return new Matrix4().compose(new Vector3(...entity.transform.position), quaternion, new Vector3(...entity.transform.scale));
+  }, [entity.transform.position, entity.transform.rotation, entity.transform.scale]);
+  const worldHand = useMemo(() => new Vector3(...localHand).applyMatrix4(matrix), [localHand, matrix]);
+
+  const commit = () => {
+    if (!targetRef.current) return;
+    const local = targetRef.current.position.clone().applyMatrix4(matrix.clone().invert());
+    applySelectedArmIK(side, local.toArray() as Vec3);
+  };
+
+  return (
+    <TransformControls mode="translate" size={0.65} translationSnap={0.05} onMouseUp={commit}>
+      <group ref={targetRef} position={worldHand}>
+        <mesh><sphereGeometry args={[0.09, 16, 12]} /><meshBasicMaterial color="#ec4899" depthTest={false} wireframe /></mesh>
+      </group>
+    </TransformControls>
+  );
+}
+
+function RelationshipGuides({ entities, relationships }: { entities: Entity[]; relationships: Relationship[] }) {
+  const colors: Record<Relationship['type'], string> = { lookAt: '#22d3ee', hold: '#ec4899', sitOn: '#a78bfa', placeOn: '#34d399' };
+  return (
+    <>
+      {relationships.filter((relationship) => relationship.active).map((relationship) => {
+        const source = entities.find((entity) => entity.id === relationship.sourceEntityId);
+        const target = entities.find((entity) => entity.id === relationship.targetEntityId);
+        if (!source || !target) return null;
+        const sourcePoint: Vec3 = [source.transform.position[0], source.transform.position[1] + (source.type === 'character' ? 1.2 : 0.3), source.transform.position[2]];
+        const targetPoint: Vec3 = [target.transform.position[0], target.transform.position[1] + (target.type === 'character' ? 1.2 : 0.3), target.transform.position[2]];
+        return <Line key={relationship.id} points={[sourcePoint, targetPoint]} color={colors[relationship.type]} lineWidth={1.5} dashed />;
+      })}
+    </>
+  );
+}
+
+function ShotCameraController({ cameraEntity, enabled }: { cameraEntity?: Entity; enabled: boolean }) {
+  const camera = useThree((state) => state.camera);
+  useFrame(() => {
+    if (!enabled || !cameraEntity) return;
+    camera.position.set(...cameraEntity.transform.position);
+    camera.rotation.set(...cameraEntity.transform.rotation, 'XYZ');
+    camera.near = 0.1;
+    camera.far = 100;
+    camera.updateProjectionMatrix();
+  });
+  return null;
+}
+
+function DepthOverride({ enabled }: { enabled: boolean }) {
+  const scene = useThree((state) => state.scene);
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const material = new MeshDepthMaterial();
+    const previous = scene.overrideMaterial;
+    scene.overrideMaterial = material;
+    return () => {
+      scene.overrideMaterial = previous;
+      material.dispose();
+    };
+  }, [enabled, scene]);
+  return null;
+}
+
+export const Viewport = forwardRef<ViewportHandle>(function Viewport(_props, ref) {
+  const project = useEditorStore((state) => state.project);
+  const activeShotId = useEditorStore((state) => state.activeShotId);
+  const selectedEntityId = useEditorStore((state) => state.selectedEntityId);
+  const selectedJoint = useEditorStore((state) => state.selectedJoint);
+  const transformMode = useEditorStore((state) => state.transformMode);
+  const setTransformMode = useEditorStore((state) => state.setTransformMode);
+  const selectEntity = useEditorStore((state) => state.selectEntity);
+  const playheadTime = useEditorStore((state) => state.playheadTime);
+  const isPlaying = useEditorStore((state) => state.isPlaying);
+  const [shotCameraView, setShotCameraView] = useState(false);
+  const [captureRequest, setCaptureRequest] = useState<CaptureRequest | null>(null);
+  const rendererRef = useRef<RootState | null>(null);
+  const captureBusyRef = useRef(false);
+  const captureIdRef = useRef(0);
+
+  const scene = project.scenes.find((item) => item.id === project.activeSceneId) ?? project.scenes[0];
+  const shot = scene.shots.find((item) => item.id === activeShotId) ?? scene.shots[0];
+  const effectiveTime = captureRequest?.time ?? playheadTime;
+  const renderMode = captureRequest?.mode ?? 'beauty';
+  const captureActive = Boolean(captureRequest);
+  const entities = resolveSceneAtTime(scene, shot, effectiveTime);
+  const selected = entities.find((entity) => entity.id === selectedEntityId) ?? null;
+  const activeCamera = entities.find((entity) => entity.id === shot.cameraEntityId && entity.type === 'camera');
+  const ikSide = selectedJoint === 'leftWrist' ? 'left' : selectedJoint === 'rightWrist' ? 'right' : null;
+  const cameraEnabled = shotCameraView || captureActive;
+
+  useImperativeHandle(ref, () => ({
+    captureFrame(time, mode) {
+      return new Promise<Blob>((resolve, reject) => {
+        if (captureBusyRef.current) {
+          reject(new Error('다른 프레임을 캡처하고 있습니다.'));
+          return;
+        }
+        captureBusyRef.current = true;
+        setCaptureRequest({ id: ++captureIdRef.current, time, mode, resolve, reject });
+      });
+    },
+  }), []);
+
+  useEffect(() => {
+    if (!captureRequest || !rendererRef.current) return undefined;
+    let secondFrame = 0;
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        const state = rendererRef.current;
+        if (!state) {
+          captureBusyRef.current = false;
+          captureRequest.reject(new Error('렌더러를 찾지 못했습니다.'));
+          setCaptureRequest(null);
+          return;
+        }
+        state.gl.render(state.scene, state.camera);
+        state.gl.domElement.toBlob((blob) => {
+          if (!blob) {
+            captureBusyRef.current = false;
+            captureRequest.reject(new Error('PNG 프레임을 만들지 못했습니다.'));
+            setCaptureRequest(null);
+            return;
+          }
+          captureBusyRef.current = false;
+          setCaptureRequest(null);
+          setTimeout(() => captureRequest.resolve(blob), 0);
+        }, 'image/png');
+      });
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+    };
+  }, [captureRequest]);
+
+  const visibleEntities = entities.filter((entity) => {
+    if (cameraEnabled && entity.type === 'camera') return false;
+    if (!captureActive) return true;
+    if (entity.type === 'light') return false;
+    if (renderMode === 'pose') return entity.type === 'character';
+    return true;
+  });
+
+  return (
+    <div className="viewport">
+      <Canvas
+        camera={{ position: [0, 3.5, 7], fov: 48 }}
+        gl={{ preserveDrawingBuffer: true, antialias: true }}
+        onCreated={(state) => { rendererRef.current = state; }}
+        onPointerMissed={() => !captureActive && selectEntity(null)}
+        shadows={renderMode === 'beauty'}
+      >
+        <color attach="background" args={[renderMode === 'beauty' ? '#0c0a09' : '#000000']} />
+        {renderMode === 'beauty' && <ambientLight intensity={1.2} />}
+        {renderMode === 'beauty' && <directionalLight position={[4, 8, 4]} intensity={2} castShadow />}
+        {!captureActive && <Grid infiniteGrid fadeDistance={30} sectionColor="#57534e" cellColor="#292524" />}
+        <DepthOverride enabled={renderMode === 'depth'} />
+        <ShotCameraController cameraEntity={activeCamera} enabled={cameraEnabled} />
+        {visibleEntities.map((entity) => (
+          <SceneEntity
+            key={`${entity.id}:${activeShotId}:${renderMode}`}
+            entity={entity}
+            transformMode={transformMode}
+            renderMode={renderMode}
+            interactive={!captureActive}
+            relationshipControlled={Boolean(findControllingRelationship(shot.relationships, entity.id)) || playheadTime > 0 || isPlaying}
+          />
+        ))}
+        {!captureActive && <RelationshipGuides entities={entities} relationships={shot.relationships} />}
+        {!captureActive && transformMode === 'pose' && selected?.type === 'character' && ikSide && !selected.locked && (
+          <ArmIKTarget entity={selected} side={ikSide} />
+        )}
+        <OrbitControls makeDefault enabled={!cameraEnabled && !captureActive} />
+      </Canvas>
+
+      <div className="viewport-toolbar" aria-label="변환 도구">
+        <button className={!shotCameraView ? 'active' : ''} onClick={() => setShotCameraView(false)}>자유 시점</button>
+        <button className={shotCameraView ? 'active' : ''} disabled={!activeCamera} onClick={() => setShotCameraView(true)}>샷 카메라</button>
+        <span className="toolbar-divider" />
+        <button className={transformMode === 'translate' ? 'active' : ''} onClick={() => setTransformMode('translate')}>이동</button>
+        <button className={transformMode === 'rotate' ? 'active' : ''} onClick={() => setTransformMode('rotate')}>회전</button>
+        <button className={transformMode === 'scale' ? 'active' : ''} onClick={() => setTransformMode('scale')}>크기</button>
+        <button className={transformMode === 'pose' ? 'active' : ''} disabled={selected?.type !== 'character'} onClick={() => setTransformMode('pose')}>포즈·IK</button>
+      </div>
+
+      <div className="viewport-badge">
+        {shotCameraView ? '샷 카메라' : '자유 시점'} · 선택: {selected?.name ?? '없음'} · Shot: {shot.name}
+        {transformMode === 'pose' && selectedJoint ? ` · 관절: ${selectedJoint}` : ''}
+        {selected && findControllingRelationship(shot.relationships, selected.id) ? ' · 관계 제어 중' : ''}
+        {playheadTime > 0 ? ` · ${playheadTime.toFixed(2)}초 미리보기` : ''}
+      </div>
+      {captureActive ? (
+        <div className="viewport-hint">{renderMode} 제어 프레임을 캡처하고 있습니다.</div>
+      ) : playheadTime > 0 ? (
+        <div className="viewport-hint">타임라인 미리보기 중에는 직접 변형이 잠깁니다. 0초로 이동해 편집하세요.</div>
+      ) : transformMode === 'pose' && ikSide ? (
+        <div className="viewport-hint">분홍색 목표점을 끌어 {ikSide === 'left' ? '왼손' : '오른손'} IK를 조절하세요.</div>
+      ) : null}
+    </div>
+  );
+});

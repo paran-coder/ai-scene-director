@@ -29,8 +29,55 @@ export const JOINT_NAMES = [
 export type JointName = (typeof JOINT_NAMES)[number];
 export type PoseState = Record<JointName, Vec3>;
 
+export type CharacterRole = 'lead' | 'supporting' | 'background';
+export type CharacterAgeGroup = 'child' | 'teen' | 'adult' | 'senior' | 'unspecified';
+export type CharacterPresentation = 'feminine' | 'masculine' | 'neutral' | 'unspecified';
+
+export interface CharacterAppearance {
+  role: CharacterRole;
+  descriptor: string;
+  ageGroup: CharacterAgeGroup;
+  presentation: CharacterPresentation;
+  occupation?: string;
+  outfitSummary: string;
+  outfitColors: string[];
+  hairColor: string;
+  skinTone: string;
+}
+
 export interface CharacterData {
   pose: PoseState;
+  appearance: CharacterAppearance;
+}
+
+export type AssetPrimitive = 'box' | 'cylinder' | 'sphere' | 'plane';
+export type AssetCategory = 'environment' | 'architecture' | 'furniture' | 'handheld' | 'vehicle' | 'decor' | 'lighting' | 'generic';
+
+export interface EntityAssetData {
+  presetId?: string;
+  modelAssetId?: string;
+  category: AssetCategory;
+  primitive: AssetPrimitive;
+  color: string;
+  material: 'matte' | 'metal' | 'glass' | 'emissive';
+  source: 'preset' | 'prompt' | 'manual';
+  tags: string[];
+}
+
+
+export type AssetLibraryKind = 'glb';
+export type AssetLibraryCategory = 'character' | 'prop' | 'environment';
+
+export interface AssetLibraryItem {
+  id: string;
+  name: string;
+  kind: AssetLibraryKind;
+  category: AssetLibraryCategory;
+  mimeType: string;
+  sizeBytes: number;
+  storageKey: string;
+  createdAt: string;
+  originalFilename: string;
 }
 
 export type EntityType = 'character' | 'prop' | 'camera' | 'light';
@@ -43,6 +90,7 @@ export interface Entity {
   visible: boolean;
   locked: boolean;
   character?: CharacterData;
+  asset?: EntityAssetData;
 }
 
 export type OverridePath =
@@ -141,10 +189,21 @@ export interface Shot {
   generationResults: GenerationResult[];
 }
 
+export interface SceneEnvironment {
+  presetId: string;
+  name: string;
+  location: string;
+  backgroundColor: string;
+  floorColor: string;
+  palette: string[];
+  atmosphere: string[];
+}
+
 export interface Scene {
   id: string;
   name: string;
   description?: string;
+  environment: SceneEnvironment;
   entities: Entity[];
   shots: Shot[];
 }
@@ -155,6 +214,7 @@ export interface Project {
   name: string;
   revision: number;
   activeSceneId: string;
+  assetLibrary: AssetLibraryItem[];
   scenes: Scene[];
 }
 
@@ -255,6 +315,26 @@ export interface RemoveGenerationResultOperation {
 }
 
 
+
+export interface AddAssetLibraryItemOperation {
+  type: 'addAssetLibraryItem';
+  item: AssetLibraryItem;
+}
+
+export interface RemoveAssetLibraryItemOperation {
+  type: 'removeAssetLibraryItem';
+  item: AssetLibraryItem;
+  previousEntityAssets: Array<{ sceneId: string; entityId: string; asset?: EntityAssetData }>;
+}
+
+export interface UpdateEntityAssetOperation {
+  type: 'updateEntityAsset';
+  sceneId: string;
+  entityId: string;
+  previousAsset?: EntityAssetData;
+  nextAsset?: EntityAssetData;
+}
+
 export interface ReplaceSceneOperation {
   type: 'replaceScene';
   sceneId: string;
@@ -283,6 +363,9 @@ export type Operation =
   | UpdateActionOperation
   | AddGenerationResultOperation
   | RemoveGenerationResultOperation
+  | AddAssetLibraryItemOperation
+  | RemoveAssetLibraryItemOperation
+  | UpdateEntityAssetOperation
   | AddShotOperation
   | RemoveShotOperation
   | ReplaceSceneOperation

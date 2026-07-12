@@ -15,23 +15,44 @@ function PlanPreview({ plan }: { plan: SceneGenerationPlan }) {
       <div className="scene-plan-summary">
         <div><span>장소</span><strong>{plan.location}</strong></div>
         <div><span>인물</span><strong>{plan.characters.length}명</strong></div>
-        <div><span>소품</span><strong>{plan.props.reduce((sum, prop) => sum + prop.count, 0)}개</strong></div>
+        <div><span>소품</span><strong>{plan.props.reduce((sum, prop) => sum + prop.count, 0) + plan.autoProps.length}개</strong></div>
         <div><span>샷</span><strong>{plan.shots.length}개</strong></div>
       </div>
 
       <section>
         <h3>등장인물</h3>
         <div className="plan-chip-list">
-          {plan.characters.map((character, index) => <span key={`${character.name}-${index}`} className="plan-chip character">{character.name}</span>)}
+          {plan.characters.map((character, index) => (
+            <span key={`${character.name}-${index}`} className="plan-chip character" title={`${character.outfitSummary} · ${character.role}`}>
+              {character.name} · {character.outfitSummary}
+            </span>
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <h3>인물 역할·의상</h3>
+        <div className="character-plan-grid">
+          {plan.characters.map((character, index) => (
+            <article key={`character-detail-${index}`}>
+              <strong>{character.name}</strong>
+              <span>{character.role === 'lead' ? '주인공' : character.role === 'supporting' ? '조연' : '배경 인물'}</span>
+              <p>{character.descriptor}</p>
+              <small>{character.outfitSummary} · {character.ageGroup}</small>
+              <div className="color-swatches">{character.outfitColors.map((color) => <i key={color} style={{ background: color }} title={color} />)}</div>
+            </article>
+          ))}
         </div>
       </section>
 
       <section>
         <h3>소품·환경</h3>
         <div className="plan-chip-list">
-          <span className="plan-chip environment">{plan.location}</span>
+          <span className="plan-chip environment">{plan.environmentPreset.name}</span>
+          <span className="plan-chip environment">팔레트 {plan.environmentPreset.palette.join(' · ')}</span>
           {plan.atmosphere.map((item) => <span key={item} className="plan-chip atmosphere">{item}</span>)}
-          {plan.props.map((prop) => <span key={prop.name} className="plan-chip prop">{prop.name}{prop.count > 1 ? ` ×${prop.count}` : ''}</span>)}
+          {plan.props.map((prop) => <span key={prop.name} className="plan-chip prop">직접 · {prop.name}{prop.count > 1 ? ` ×${prop.count}` : ''}</span>)}
+          {plan.autoProps.map((prop) => <span key={`auto-${prop.name}`} className="plan-chip preset">프리셋 · {prop.name}</span>)}
         </div>
       </section>
 

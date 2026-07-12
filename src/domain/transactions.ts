@@ -2,6 +2,7 @@ import type {
   AddActionOperation,
   AddEntityOperation,
   AddGenerationResultOperation,
+  AddAssetLibraryItemOperation,
   AddRelationshipOperation,
   AddShotOperation,
   Operation,
@@ -9,6 +10,7 @@ import type {
   RemoveActionOperation,
   RemoveEntityOperation,
   RemoveGenerationResultOperation,
+  RemoveAssetLibraryItemOperation,
   RemoveRelationshipOperation,
   RemoveShotOperation,
   ReplaceSceneOperation,
@@ -17,6 +19,7 @@ import type {
   UpdateActionOperation,
   UpdateBaseEntityOperation,
   UpdateEntityOperation,
+  UpdateEntityAssetOperation,
   UpdateShotOperation,
 } from './types.ts';
 
@@ -234,6 +237,54 @@ function applyUpdateAction(project: Project, operation: UpdateActionOperation, i
 }
 
 
+
+function applyAddAssetLibraryItem(project: Project, operation: AddAssetLibraryItemOperation, inverse: boolean): void {
+  project.assetLibrary = project.assetLibrary ?? [];
+  if (inverse) {
+    project.assetLibrary = project.assetLibrary.filter((item) => item.id !== operation.item.id);
+    return;
+  }
+  if (!project.assetLibrary.some((item) => item.id === operation.item.id)) {
+    project.assetLibrary.push(structuredClone(operation.item));
+  }
+}
+
+function applyRemoveAssetLibraryItem(project: Project, operation: RemoveAssetLibraryItemOperation, inverse: boolean): void {
+  project.assetLibrary = project.assetLibrary ?? [];
+  if (inverse) {
+    if (!project.assetLibrary.some((item) => item.id === operation.item.id)) {
+      project.assetLibrary.push(structuredClone(operation.item));
+    }
+    operation.previousEntityAssets.forEach((assignment) => {
+      const scene = findScene(project, assignment.sceneId);
+      const entity = scene.entities.find((item) => item.id === assignment.entityId);
+      if (entity) entity.asset = assignment.asset ? structuredClone(assignment.asset) : undefined;
+    });
+    return;
+  }
+  project.assetLibrary = project.assetLibrary.filter((item) => item.id !== operation.item.id);
+  project.scenes.forEach((scene) => scene.entities.forEach((entity) => {
+    if (entity.asset?.modelAssetId === operation.item.id) {
+      const next = structuredClone(entity.asset);
+      delete next.modelAssetId;
+      next.tags = next.tags.filter((tag) => tag !== 'imported-glb');
+      entity.asset = next;
+    }
+  }));
+}
+
+function applyUpdateEntityAsset(project: Project, operation: UpdateEntityAssetOperation, inverse: boolean): void {
+  const scene = findScene(project, operation.sceneId);
+  const entity = scene.entities.find((item) => item.id === operation.entityId);
+  if (!entity) throw new Error(`Entity not found: ${operation.entityId}`);
+  if (entity.locked) throw new Error(`${entity.name} is locked`);
+  const asset = inverse ? operation.previousAsset : operation.nextAsset;
+  if (asset?.modelAssetId && !project.assetLibrary.some((item) => item.id === asset.modelAssetId)) {
+    throw new Error('선택한 GLB 에셋이 라이브러리에 없습니다.');
+  }
+  entity.asset = asset ? structuredClone(asset) : undefined;
+}
+
 function applyAddGenerationResult(project: Project, operation: AddGenerationResultOperation, inverse: boolean): void {
   const { shot } = findShot(project, operation.sceneId, operation.shotId);
   if (inverse) {
@@ -333,6 +384,15 @@ function applyOperation(project: Project, operation: Operation, inverse = false)
       return;
     case 'updateAction':
       applyUpdateAction(project, operation, inverse);
+      return;
+    case 'addAssetLibraryItem':
+      applyAddAssetLibraryItem(project, operation, inverse);
+      return;
+    case 'removeAssetLibraryItem':
+      applyRemoveAssetLibraryItem(project, operation, inverse);
+      return;
+    case 'updateEntityAsset':
+      applyUpdateEntityAsset(project, operation, inverse);
       return;
     case 'addGenerationResult':
       applyAddGenerationResult(project, operation, inverse);

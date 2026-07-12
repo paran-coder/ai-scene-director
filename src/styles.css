@@ -195,3 +195,68 @@ button.primary-export { border-color: #0e7490; background: #164e63; color: #cffa
   .scene-prompt-column { border-right: 0; border-bottom: 1px solid #333; }
   .scene-plan-summary { grid-template-columns: repeat(2,1fr); }
 }
+
+.environment-summary {
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.45);
+  display: grid;
+  gap: 4px;
+}
+.environment-summary strong { font-size: 13px; }
+.environment-summary span { color: #94a3b8; font-size: 11px; }
+.environment-palette, .color-swatches { display: flex; gap: 5px; align-items: center; }
+.environment-palette i, .color-swatches i {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.35);
+  box-shadow: 0 0 0 1px rgba(15,23,42,.5);
+}
+.color-swatches.large i { width: 22px; height: 22px; }
+.appearance-card, .asset-card {
+  margin: 12px 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(30, 41, 59, 0.58);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+.appearance-card p, .asset-card p { margin: 4px 0 8px; color: #cbd5e1; font-size: 12px; }
+.appearance-card dl, .asset-card dl { margin: 0 0 8px; display: grid; gap: 5px; }
+.appearance-card dl div, .asset-card dl div { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; }
+.appearance-card dt, .asset-card dt { color: #94a3b8; }
+.appearance-card dd, .asset-card dd { margin: 0; color: #e2e8f0; text-align: right; }
+.plan-chip.preset { background: rgba(14, 165, 233, 0.16); border-color: rgba(56, 189, 248, 0.4); color: #bae6fd; }
+.character-plan-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.character-plan-grid article {
+  padding: 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(148,163,184,.2);
+  background: rgba(15,23,42,.45);
+  display: grid;
+  gap: 4px;
+}
+.character-plan-grid article > span { color: #38bdf8; font-size: 11px; }
+.character-plan-grid p { margin: 0; color: #cbd5e1; font-size: 11px; }
+.character-plan-grid small { color: #94a3b8; }
+
+/* 0.10 Local GLB asset library and environment controls */
+.environment-select { margin-top: 7px !important; }
+.environment-select select { width: 100%; }
+.relayout-button { width: 100%; margin-top: 2px; padding: 7px; border-color: #0e7490; color: #cffafe; }
+.asset-library-panel { margin-top: 14px; padding-top: 14px; border-top: 1px solid #34312f; }
+.asset-library-panel h3 { margin: 0; font-size: 12px; }
+.asset-import-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 6px; }
+.asset-import-row select, .asset-import-row button { min-width: 0; padding: 7px; font-size: 11px; }
+.asset-status { margin: 7px 0; padding: 7px; border-radius: 6px; background: #123047; color: #bae6fd; font-size: 10px; line-height: 1.4; }
+.asset-library-list { display: grid; gap: 6px; margin-top: 8px; max-height: 210px; overflow: auto; }
+.asset-library-item { display: grid; gap: 7px; padding: 8px; border: 1px solid #34312f; border-radius: 8px; background: #211e1c; }
+.asset-library-item.active { border-color: #22c55e; background: #13251a; }
+.asset-library-item > div:first-child { display: grid; gap: 3px; min-width: 0; }
+.asset-library-item strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.asset-library-item span { color: #a8a29e; font-size: 9px; }
+.asset-library-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.asset-library-actions button, .proxy-restore { padding: 5px 6px; font-size: 10px; }
+.proxy-restore { width: 100%; margin-top: 8px; border-color: #78716c; }

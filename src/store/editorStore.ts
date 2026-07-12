@@ -7,6 +7,7 @@ import { sampleProject } from '../domain/sampleProject';
 import { applyTransaction, revertTransaction } from '../domain/transactions';
 import type {
   ActionBlock,
+  AssetLibraryItem,
   ActionParameters,
   ActionType,
   Entity,
@@ -27,6 +28,8 @@ import type {
 } from '../domain/types';
 import { validateAndMigrateProject } from '../domain/validation';
 import { generateSceneFromPrompt } from '../domain/sceneGenerator';
+import { assetWithModel, assetWithoutModel } from '../domain/assets';
+import { relayoutSceneEntities, replaceEnvironmentPreset } from '../domain/environmentLayout';
 
 interface EditorState {
   project: Project;
@@ -82,6 +85,12 @@ interface EditorState {
   updateActiveShotDuration(duration: number): void;
 
   replaceActiveSceneFromPrompt(prompt: string): void;
+  registerAsset(item: AssetLibraryItem): void;
+  assignAssetToSelected(assetId: string): void;
+  clearSelectedModelAsset(): void;
+  removeAsset(assetId: string): void;
+  changeEnvironmentPreset(presetId: string): void;
+  relayoutActiveScene(): void;
   importProject(project: unknown): boolean;
   undo(): void;
   redo(): void;
@@ -136,7 +145,18 @@ function createDefaultEntity(type: EntityType, index: number): Entity {
     transform: baseTransform,
     visible: true,
     locked: false,
-    character: type === 'character' ? { pose: createNeutralPose() } : undefined,
+    character: type === 'character' ? {
+      pose: createNeutralPose(),
+      appearance: { role: 'supporting', descriptor: `${labels[type]} ${index + 1}`, ageGroup: 'unspecified', presentation: 'unspecified', outfitSummary: '기본 의상', outfitColors: ['#64748b'], hairColor: '#1c1917', skinTone: '#d6a77a' },
+    } : undefined,
+    asset: {
+      category: type === 'prop' ? 'generic' : type === 'light' ? 'lighting' : 'generic',
+      primitive: type === 'light' ? 'sphere' : 'box',
+      color: type === 'character' ? '#64748b' : type === 'camera' ? '#38bdf8' : type === 'light' ? '#fde047' : '#a8a29e',
+      material: type === 'light' ? 'emissive' : 'matte',
+      source: 'manual',
+      tags: [type],
+    },
   };
 }
 
@@ -709,6 +729,78 @@ export const useEditorStore = create<EditorState>()(
           }]));
         },
 
+        registerAsset: (item) => {
+          const state = get();
+          if (state.project.assetLibrary.some((asset) => asset.id === item.id)) {
+            set({ message: '이미 등록된 에셋입니다.' });
+            return;
+          }
+          commit(transaction(`${item.name} GLB 에셋 등록`, [{ type: 'addAssetLibraryItem', item: structuredClone(item) }]));
+        },
+
+        assignAssetToSelected: (assetId) => {
+          const state = get();
+          if (!state.selectedEntityId) return;
+          const scene = currentScene(state);
+          const entity = scene.entities.find((item) => item.id === state.selectedEntityId);
+          const item = state.project.assetLibrary.find((asset) => asset.id === assetId);
+          if (!entity || !item) return;
+          if (entity.locked) {
+            set({ message: `${entity.name}이 잠겨 있습니다.` });
+            return;
+          }
+          if (item.category === 'character' && entity.type !== 'character') {
+            set({ message: '인물용 GLB는 인물 Entity에만 적용할 수 있습니다.' });
+            return;
+          }
+          if (item.category !== 'character' && entity.type === 'character') {
+            set({ message: '인물 Entity에는 인물용 GLB를 선택해 주세요.' });
+            return;
+          }
+          const previousAsset = entity.asset ? structuredClone(entity.asset) : undefined;
+          const nextAsset = assetWithModel(entity.asset, assetId);
+          commit(transaction(`${entity.name} 모델을 ${item.name}(으)로 교체`, [{ type: 'updateEntityAsset', sceneId: scene.id, entityId: entity.id, previousAsset, nextAsset }]));
+        },
+
+        clearSelectedModelAsset: () => {
+          const state = get();
+          if (!state.selectedEntityId) return;
+          const scene = currentScene(state);
+          const entity = scene.entities.find((item) => item.id === state.selectedEntityId);
+          if (!entity?.asset?.modelAssetId) return;
+          const previousAsset = structuredClone(entity.asset);
+          const nextAsset = assetWithoutModel(entity.asset);
+          commit(transaction(`${entity.name} 프록시 모델로 복원`, [{ type: 'updateEntityAsset', sceneId: scene.id, entityId: entity.id, previousAsset, nextAsset }]));
+        },
+
+        removeAsset: (assetId) => {
+          const state = get();
+          const item = state.project.assetLibrary.find((asset) => asset.id === assetId);
+          if (!item) return;
+          const previousEntityAssets = state.project.scenes.flatMap((scene) => scene.entities
+            .filter((entity) => entity.asset?.modelAssetId === assetId)
+            .map((entity) => ({ sceneId: scene.id, entityId: entity.id, asset: entity.asset ? structuredClone(entity.asset) : undefined })));
+          commit(transaction(`${item.name} 라이브러리에서 제거`, [{ type: 'removeAssetLibraryItem', item: structuredClone(item), previousEntityAssets }]));
+        },
+
+        changeEnvironmentPreset: (presetId) => {
+          const state = get();
+          const previousScene = currentScene(state);
+          try {
+            const nextScene = replaceEnvironmentPreset(previousScene, presetId, true);
+            commit(transaction(`${nextScene.environment.name} 환경으로 교체`, [{ type: 'replaceScene', sceneId: previousScene.id, previousScene: structuredClone(previousScene), nextScene }]));
+          } catch (error) {
+            set({ message: error instanceof Error ? error.message : '환경을 교체하지 못했습니다.' });
+          }
+        },
+
+        relayoutActiveScene: () => {
+          const state = get();
+          const previousScene = currentScene(state);
+          const nextScene = relayoutSceneEntities(previousScene);
+          commit(transaction('인원수와 공간에 맞춰 장면 재배치', [{ type: 'replaceScene', sceneId: previousScene.id, previousScene: structuredClone(previousScene), nextScene }]));
+        },
+
         replaceActiveSceneFromPrompt: (prompt) => {
           const state = get();
           const trimmed = prompt.trim();
@@ -857,7 +949,7 @@ export const useEditorStore = create<EditorState>()(
           selectedActionId: null,
           undoStack: [],
           redoStack: [],
-          message: result.warnings.length ? `저장된 프로젝트를 0.8.0으로 변환했습니다.` : null,
+          message: result.warnings.length ? `저장된 프로젝트를 0.10.0으로 변환했습니다.` : null,
         };
       },
     },

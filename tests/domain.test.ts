@@ -9,6 +9,9 @@ import type { ActionBlock, Relationship, Transaction } from '../src/domain/types
 import { validateAndMigrateProject } from '../src/domain/validation.ts';
 import { buildComfyViewUrl, createConnectionTestWorkflow, detectPotentialPaidNodes, extractComfyOutputs, normalizeComfyServerUrl, replaceWorkflowPlaceholders, validateWorkflow } from '../src/domain/comfyui.ts';
 import { analyzeScenePrompt, buildSceneFromPlan, generateSceneFromPrompt } from '../src/domain/sceneGenerator.ts';
+import { assetWithModel, createAssetLibraryItem, validateGlbBlob } from '../src/domain/assets.ts';
+import { deleteAssetBlob, getAssetBlob, saveAssetBlob } from '../src/domain/assetStorage.ts';
+import { relayoutSceneEntities, replaceEnvironmentPreset } from '../src/domain/environmentLayout.ts';
 
 function cloneSample() {
   return structuredClone(sampleProject);
@@ -55,7 +58,7 @@ test('0.5 프로젝트를 최신 스키마로 변환한다', () => {
   shots.forEach((shot) => delete shot.actions);
   const result = validateAndMigrateProject(legacy);
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '0.8.0');
+  assert.equal(result.project?.schemaVersion, '0.10.0');
   assert.deepEqual(result.project?.scenes[0].shots[0].actions, []);
   assert.equal(result.migrated, true);
 });
@@ -262,7 +265,7 @@ test('Shot Package Manifest는 시작·종료 상태와 카메라를 포함한�
   const shot = scene.shots[0];
   shot.actions.push(action({ type: 'walk', actorEntityId: 'character-a', duration: 2, parameters: { direction: [0, 0, -1], distance: 2 } }));
   const manifest = buildShotPackageManifest(project, scene, shot);
-  assert.equal(manifest.schemaVersion, '0.8.0');
+  assert.equal(manifest.schemaVersion, '0.10.0');
   assert.equal(manifest.camera?.id, shot.cameraEntityId);
   const character = manifest.entities.find((entity) => entity.id === 'character-a')!;
   assert.notDeepEqual(character.start.transform.position, character.end.transform.position);
@@ -299,7 +302,7 @@ test('0.6 프로젝트는 generationResults를 추가해 0.7로 마이그레이�
   delete shots[0].generationResults;
   const result = validateAndMigrateProject(legacy);
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '0.8.0');
+  assert.equal(result.project?.schemaVersion, '0.10.0');
   assert.deepEqual(result.project?.scenes[0].shots[0].generationResults, []);
 });
 
@@ -438,13 +441,164 @@ test('replaceScene Transaction은 전체 자동 생성 Scene을 적용하고 Und
   assert.deepEqual(reverted.scenes[0], previousScene);
 });
 
-test('0.7 프로젝트는 0.8로 마이그레이션되고 Scene 설명을 보존한다', () => {
+test('0.7 프로젝트는 0.10으로 마이그레이션되고 Scene 설명을 보존한다', () => {
   const legacy = cloneSample() as unknown as Record<string, unknown>;
   legacy.schemaVersion = '0.7.0';
   const scenes = legacy.scenes as Array<Record<string, unknown>>;
   scenes[0].description = '테스트 장면 설명';
   const result = validateAndMigrateProject(legacy);
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '0.8.0');
+  assert.equal(result.project?.schemaVersion, '0.10.0');
   assert.equal(result.project?.scenes[0].description, '테스트 장면 설명');
+});
+
+
+test('편의점 문장은 편의점 외부 프리셋과 자동 배경 에셋을 선택한다', () => {
+  const plan = analyzeScenePrompt(GENERATOR_EXAMPLE);
+  assert.equal(plan.environmentPreset.id, 'convenience-exterior');
+  assert.ok(plan.autoProps.some((prop) => prop.name === '편의점 외벽'));
+  assert.ok(plan.autoProps.some((prop) => prop.name === '젖은 보도'));
+});
+
+test('인물 설명에서 역할·연령·의상 메타데이터를 구조화한다', () => {
+  const plan = analyzeScenePrompt(GENERATOR_EXAMPLE);
+  assert.equal(plan.characters[0].role, 'lead');
+  assert.equal(plan.characters[0].outfitSummary, '검은 코트');
+  assert.equal(plan.characters[1].role, 'supporting');
+  assert.equal(plan.characters[1].ageGroup, 'teen');
+  assert.equal(plan.characters[1].outfitSummary, '교복');
+});
+
+test('생성 Scene은 환경 프리셋·에셋 출처·인물 외형을 보존한다', () => {
+  const { scene } = generateSceneFromPrompt(GENERATOR_EXAMPLE, 'scene-001');
+  assert.equal(scene.environment.presetId, 'convenience-exterior');
+  const wall = scene.entities.find((entity) => entity.name === '편의점 외벽');
+  assert.equal(wall?.asset?.source, 'preset');
+  assert.equal(wall?.asset?.category, 'architecture');
+  const lead = scene.entities.find((entity) => entity.type === 'character');
+  assert.equal(lead?.character?.appearance.outfitSummary, '검은 코트');
+});
+
+test('0.8 프로젝트는 환경·외형·에셋 메타데이터를 추가해 0.10으로 변환한다', () => {
+  const legacy = cloneSample() as unknown as Record<string, unknown>;
+  legacy.schemaVersion = '0.8.0';
+  const scenes = legacy.scenes as Array<Record<string, unknown>>;
+  delete scenes[0].environment;
+  const entities = scenes[0].entities as Array<Record<string, unknown>>;
+  delete entities[0].asset;
+  const character = entities[0].character as Record<string, unknown>;
+  delete character.appearance;
+  const result = validateAndMigrateProject(legacy);
+  assert.equal(result.success, true);
+  assert.equal(result.project?.schemaVersion, '0.10.0');
+  assert.ok(result.project?.scenes[0].environment);
+  assert.ok(result.project?.scenes[0].entities[0].asset);
+  assert.ok(result.project?.scenes[0].entities[0].character?.appearance);
+});
+
+
+test('0.9 프로젝트는 빈 GLB 에셋 라이브러리를 추가해 0.10으로 변환한다', () => {
+  const legacy = cloneSample() as unknown as Record<string, unknown>;
+  legacy.schemaVersion = '0.9.0';
+  delete legacy.assetLibrary;
+  const result = validateAndMigrateProject(legacy);
+  assert.equal(result.success, true);
+  assert.equal(result.project?.schemaVersion, '0.10.0');
+  assert.deepEqual(result.project?.assetLibrary, []);
+});
+
+test('GLB 에셋 적용은 Transform·Shot Override·관계를 유지한다', () => {
+  const project = cloneSample();
+  const item = createAssetLibraryItem({
+    id: 'asset-chair', name: '고급 의자', originalFilename: 'chair.glb', sizeBytes: 2048,
+    category: 'prop', createdAt: '2026-07-12T00:00:00.000Z',
+  });
+  project.scenes[0].shots[0].overrides.push({
+    id: 'shot-001:chair-01:transform.position', entityId: 'chair-01', path: 'transform.position', value: [-2, 0.45, 1.2],
+  });
+  project.scenes[0].shots[0].relationships.push(relationship('sitOn', 'character-a', 'chair-01'));
+  const chair = project.scenes[0].entities.find((entity) => entity.id === 'chair-01')!;
+  const originalTransform = structuredClone(chair.transform);
+  const tx: Transaction = {
+    id: 'tx-asset-apply', title: 'GLB 적용', createdAt: new Date().toISOString(), operations: [
+      { type: 'addAssetLibraryItem', item },
+      { type: 'updateEntityAsset', sceneId: 'scene-001', entityId: 'chair-01', previousAsset: structuredClone(chair.asset), nextAsset: assetWithModel(chair.asset, item.id) },
+    ],
+  };
+  const changed = applyTransaction(project, tx);
+  const changedChair = changed.scenes[0].entities.find((entity) => entity.id === 'chair-01')!;
+  assert.equal(changedChair.asset?.modelAssetId, item.id);
+  assert.deepEqual(changedChair.transform, originalTransform);
+  assert.equal(changed.scenes[0].shots[0].overrides.length, 1);
+  assert.equal(changed.scenes[0].shots[0].relationships.length, 1);
+  const reverted = revertTransaction(changed, tx);
+  assert.equal(reverted.assetLibrary.length, 0);
+  assert.equal(reverted.scenes[0].entities.find((entity) => entity.id === 'chair-01')?.asset?.modelAssetId, undefined);
+});
+
+test('GLB 에셋 제거는 연결을 해제하고 Undo 시 복원한다', () => {
+  const project = cloneSample();
+  const item = createAssetLibraryItem({ id: 'asset-cup', name: '컵 GLB', originalFilename: 'cup.glb', sizeBytes: 1024, category: 'prop', createdAt: '2026-07-12T00:00:00.000Z' });
+  project.assetLibrary.push(item);
+  const cup = project.scenes[0].entities.find((entity) => entity.id === 'coffee-cup')!;
+  cup.asset = assetWithModel(cup.asset, item.id);
+  const tx: Transaction = {
+    id: 'tx-remove-asset', title: '에셋 제거', createdAt: new Date().toISOString(), operations: [{
+      type: 'removeAssetLibraryItem', item,
+      previousEntityAssets: [{ sceneId: 'scene-001', entityId: cup.id, asset: structuredClone(cup.asset) }],
+    }],
+  };
+  const changed = applyTransaction(project, tx);
+  assert.equal(changed.assetLibrary.length, 0);
+  assert.equal(changed.scenes[0].entities.find((entity) => entity.id === cup.id)?.asset?.modelAssetId, undefined);
+  const reverted = revertTransaction(changed, tx);
+  assert.equal(reverted.assetLibrary.length, 1);
+  assert.equal(reverted.scenes[0].entities.find((entity) => entity.id === cup.id)?.asset?.modelAssetId, item.id);
+});
+
+test('환경 프리셋 교체는 인물·Shot Override를 유지하고 호환 표면 관계를 재연결한다', () => {
+  const scene = structuredClone(sampleProject.scenes[0]);
+  scene.shots[0].overrides.push({ id: 'shot-001:character-a:transform.position', entityId: 'character-a', path: 'transform.position', value: [-2, 0, 0] });
+  scene.shots[0].relationships.push(relationship('placeOn', 'coffee-cup', 'table'));
+  const changed = replaceEnvironmentPreset(scene, 'kitchen', false);
+  assert.equal(changed.environment.presetId, 'kitchen');
+  assert.ok(changed.entities.some((entity) => entity.id === 'character-a'));
+  assert.ok(changed.shots[0].overrides.some((override) => override.entityId === 'character-a'));
+  const place = changed.shots[0].relationships.find((item) => item.type === 'placeOn');
+  assert.ok(place);
+  assert.notEqual(place?.targetEntityId, 'table');
+  assert.ok(changed.entities.some((entity) => entity.id === place?.targetEntityId));
+});
+
+test('장면 재배치는 인원수에 따라 캐릭터를 분산하고 카메라를 중심으로 향하게 한다', () => {
+  const scene = structuredClone(sampleProject.scenes[0]);
+  scene.entities.push(structuredClone({ ...scene.entities[0], id: 'character-c', name: '서준', transform: { ...scene.entities[0].transform, position: [9, 0, 9] } }));
+  const changed = relayoutSceneEntities(scene);
+  const characters = changed.entities.filter((entity) => entity.type === 'character');
+  assert.equal(new Set(characters.map((entity) => entity.transform.position.join(','))).size, 3);
+  const camera = changed.entities.find((entity) => entity.type === 'camera')!;
+  assert.ok(camera.transform.position[2] > 5);
+  assert.notDeepEqual(camera.transform.rotation, [0, 0, 0]);
+});
+
+
+test('GLB 헤더 검증은 glTF 2.0 바이너리만 허용한다', async () => {
+  const validHeader = new ArrayBuffer(12);
+  const view = new DataView(validHeader);
+  view.setUint32(0, 0x46546c67, true);
+  view.setUint32(4, 2, true);
+  view.setUint32(8, 12, true);
+  assert.equal((await validateGlbBlob(new Blob([validHeader]))).valid, true);
+  assert.equal((await validateGlbBlob(new Blob(['not glb']))).valid, false);
+});
+
+test('로컬 에셋 저장소는 GLB Blob을 저장·복원·삭제한다', async () => {
+  const key = 'test:asset-storage';
+  const blob = new Blob(['glb-data'], { type: 'model/gltf-binary' });
+  await saveAssetBlob(key, blob);
+  const restored = await getAssetBlob(key);
+  assert.ok(restored);
+  assert.equal(await restored?.text(), 'glb-data');
+  await deleteAssetBlob(key);
+  assert.equal(await getAssetBlob(key), null);
 });

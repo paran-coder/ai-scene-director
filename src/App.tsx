@@ -2,9 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Viewport, type CaptureRenderMode, type ViewportHandle } from './components/Viewport';
 import { ComfyPanel, type PreparedComfyInputs } from './components/ComfyPanel';
 import { SceneGeneratorPanel } from './components/SceneGeneratorPanel';
+import { AssetLibraryPanel } from './components/AssetLibraryPanel';
 import { ACTION_LABELS } from './domain/actions';
 import { buildCameraPrompt, buildMotionPrompt, buildShotPackageManifest, buildShotPrompt, createStoredZip, DEFAULT_NEGATIVE_PROMPT, downloadBlob, safeFilename } from './domain/export';
 import { POSE_PRESETS } from './domain/pose';
+import { ENVIRONMENT_PRESETS } from './domain/environmentPresets';
 import { describeRelationship, findControllingRelationship } from './domain/relationships';
 import { resolveSceneAtTime } from './domain/resolver';
 import { JOINT_NAMES, type ActionBlock, type ActionType, type Entity, type EntityType, type HandSide, type JointName, type Project, type RelationshipType, type Vec3 } from './domain/types';
@@ -97,6 +99,8 @@ export default function App() {
   const updateActiveShotName = useEditorStore((state) => state.updateActiveShotName);
   const updateActiveShotDuration = useEditorStore((state) => state.updateActiveShotDuration);
   const replaceActiveSceneFromPrompt = useEditorStore((state) => state.replaceActiveSceneFromPrompt);
+  const changeEnvironmentPreset = useEditorStore((state) => state.changeEnvironmentPreset);
+  const relayoutActiveScene = useEditorStore((state) => state.relayoutActiveScene);
   const importProject = useEditorStore((state) => state.importProject);
   const clearMessage = useEditorStore((state) => state.clearMessage);
   const undo = useEditorStore((state) => state.undo);
@@ -458,6 +462,17 @@ export default function App() {
             <h2>씬 계층</h2>
             <span>{scene.entities.length}개</span>
           </div>
+          <div className="environment-summary">
+            <strong>{scene.environment?.name ?? '환경 미지정'}</strong>
+            <span>{scene.environment?.location}</span>
+            <div className="environment-palette">{scene.environment?.palette.map((color) => <i key={color} style={{ background: color }} title={color} />)}</div>
+            <label className="stacked-label environment-select">환경 프리셋
+              <select value={scene.environment?.presetId ?? 'studio'} onChange={(event) => changeEnvironmentPreset(event.target.value)}>
+                {ENVIRONMENT_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+              </select>
+            </label>
+            <button className="relayout-button" onClick={relayoutActiveScene}>인원수·공간 기준 재배치</button>
+          </div>
           <div className="inline-controls">
             <select value={entityType} onChange={(event) => setEntityType(event.target.value as EntityType)}>
               {Object.entries(entityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
@@ -482,6 +497,7 @@ export default function App() {
             <button onClick={toggleSelectedLock} disabled={!selected}>{baseSelected?.locked ? '잠금 해제' : '잠금'}</button>
             <button className="danger" onClick={deleteSelected} disabled={!selected}>삭제</button>
           </div>
+          <AssetLibraryPanel />
         </aside>
 
         <Viewport ref={viewportRef} />
@@ -493,6 +509,31 @@ export default function App() {
               <label className="stacked-label">이름
                 <input value={baseSelected.name} onChange={(event) => renameSelected(event.target.value)} />
               </label>
+
+              {selected.type === 'character' && selected.character?.appearance && (
+                <section className="appearance-card">
+                  <div className="section-title-row"><h3>역할·외형</h3><span>{selected.character.appearance.role === 'lead' ? '주인공' : selected.character.appearance.role === 'supporting' ? '조연' : '배경 인물'}</span></div>
+                  <p>{selected.character.appearance.descriptor}</p>
+                  <dl>
+                    <div><dt>연령</dt><dd>{selected.character.appearance.ageGroup}</dd></div>
+                    <div><dt>직업</dt><dd>{selected.character.appearance.occupation ?? '미지정'}</dd></div>
+                    <div><dt>의상</dt><dd>{selected.character.appearance.outfitSummary}</dd></div>
+                  </dl>
+                  <div className="color-swatches large">{selected.character.appearance.outfitColors.map((color) => <i key={color} style={{ background: color }} title={color} />)}</div>
+                </section>
+              )}
+
+              {selected.asset && selected.type !== 'character' && (
+                <section className="asset-card">
+                  <div className="section-title-row"><h3>에셋 정보</h3><span>{selected.asset.source === 'preset' ? '프리셋' : selected.asset.source === 'prompt' ? '문장 감지' : '직접 추가'}</span></div>
+                  <dl>
+                    <div><dt>분류</dt><dd>{selected.asset.category}</dd></div>
+                    <div><dt>형태</dt><dd>{selected.asset.primitive}</dd></div>
+                    <div><dt>재질</dt><dd>{selected.asset.material}</dd></div>
+                  </dl>
+                  <div className="color-swatches large"><i style={{ background: selected.asset.color }} title={selected.asset.color} /></div>
+                </section>
+              )}
 
               <h3>위치</h3>
               <div className="axis-fields">

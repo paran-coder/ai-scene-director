@@ -4,10 +4,10 @@ import { resolveSceneAtTime } from './resolver.ts';
 import type { Entity, Project, Scene, Shot } from './types.ts';
 
 export interface ShotPackageManifest {
-  schemaVersion: '0.8.0';
+  schemaVersion: '0.10.0';
   generatedAt: string;
   project: { id: string; name: string; revision: number };
-  scene: { id: string; name: string };
+  scene: { id: string; name: string; environment: Scene['environment'] };
   shot: {
     id: string;
     name: string;
@@ -24,6 +24,8 @@ export interface ShotPackageManifest {
     id: string;
     name: string;
     type: Entity['type'];
+    asset?: Entity['asset'];
+    characterAppearance?: NonNullable<Entity['character']>['appearance'];
     maskColor: string;
     start: { transform: Entity['transform']; visible: boolean };
     end: { transform: Entity['transform']; visible: boolean };
@@ -45,15 +47,20 @@ export function entityMaskColor(id: string): string {
 
 export function buildShotPrompt(scene: Scene, shot: Shot): string {
   const start = resolveSceneAtTime(scene, shot, 0).filter((entity) => entity.visible && entity.type !== 'camera' && entity.type !== 'light');
-  const characters = start.filter((entity) => entity.type === 'character').map((entity) => entity.name);
-  const props = start.filter((entity) => entity.type === 'prop').map((entity) => entity.name);
+  const characters = start.filter((entity) => entity.type === 'character').map((entity) => {
+    const appearance = entity.character?.appearance;
+    return appearance ? `${entity.name}(${appearance.role}, ${appearance.outfitSummary})` : entity.name;
+  });
+  const props = start.filter((entity) => entity.type === 'prop' && entity.asset?.category !== 'environment' && entity.asset?.category !== 'architecture').map((entity) => entity.name);
+  const environmentAssets = start.filter((entity) => entity.type === 'prop' && (entity.asset?.category === 'environment' || entity.asset?.category === 'architecture')).map((entity) => entity.name);
   const relationships = shot.relationships
     .filter((relationship) => relationship.active)
     .map((relationship) => describeRelationship(relationship, scene.entities));
 
   const parts = [
-    `장면: ${scene.name}.`,
+    `장면: ${scene.name}. 배경 프리셋: ${scene.environment?.name ?? '미지정'}, 장소: ${scene.environment?.location ?? scene.name}, 분위기: ${(scene.environment?.atmosphere ?? []).join(', ') || '기본'}.`,
     characters.length ? `등장인물: ${characters.join(', ')}.` : '',
+    environmentAssets.length ? `배경 구조: ${environmentAssets.join(', ')}.` : '',
     props.length ? `주요 소품: ${props.join(', ')}.` : '',
     relationships.length ? `객체 관계: ${relationships.join('; ')}.` : '',
     `카메라 구도는 3D 샷 카메라와 시작 프레임의 구도를 정확히 유지한다.`,
@@ -106,10 +113,10 @@ export function buildShotPackageManifest(project: Project, scene: Scene, shot: S
   const endMap = new Map(end.map((entity) => [entity.id, entity]));
 
   return {
-    schemaVersion: '0.8.0',
+    schemaVersion: '0.10.0',
     generatedAt: new Date().toISOString(),
     project: { id: project.id, name: project.name, revision: project.revision },
-    scene: { id: scene.id, name: scene.name },
+    scene: { id: scene.id, name: scene.name, environment: structuredClone(scene.environment) },
     shot: {
       id: shot.id,
       name: shot.name,
@@ -130,6 +137,8 @@ export function buildShotPackageManifest(project: Project, scene: Scene, shot: S
           id: entity.id,
           name: entity.name,
           type: entity.type,
+          asset: entity.asset ? structuredClone(entity.asset) : undefined,
+          characterAppearance: entity.character?.appearance ? structuredClone(entity.character.appearance) : undefined,
           maskColor: entityMaskColor(entity.id),
           start: { transform: structuredClone(entity.transform), visible: entity.visible },
           end: { transform: structuredClone(final.transform), visible: final.visible },

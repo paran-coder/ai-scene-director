@@ -1,5 +1,6 @@
+import { createEnvironmentState, createPresetEntities, resolveEnvironmentPreset, type EnvironmentPreset } from './environmentPresets.ts';
 import { createNeutralPose, findPosePreset } from './pose.ts';
-import type { ActionBlock, Entity, Relationship, Scene, Shot, Vec3 } from './types.ts';
+import type { ActionBlock, CharacterAgeGroup, CharacterPresentation, CharacterRole, Entity, EntityAssetData, Relationship, Scene, Shot, Vec3 } from './types.ts';
 
 export type GeneratedShotKind =
   | 'wide'
@@ -14,11 +15,21 @@ export type GeneratedShotKind =
 export interface GeneratedCharacterPlan {
   name: string;
   descriptor: string;
+  role: CharacterRole;
+  ageGroup: CharacterAgeGroup;
+  presentation: CharacterPresentation;
+  occupation?: string;
+  outfitSummary: string;
+  outfitColors: string[];
+  hairColor: string;
+  skinTone: string;
 }
 
 export interface GeneratedPropPlan {
   name: string;
   count: number;
+  source: 'prompt' | 'preset';
+  category?: EntityAssetData['category'];
 }
 
 export interface GeneratedShotPlan {
@@ -35,8 +46,10 @@ export interface SceneGenerationPlan {
   title: string;
   location: string;
   atmosphere: string[];
+  environmentPreset: EnvironmentPreset;
   characters: GeneratedCharacterPlan[];
   props: GeneratedPropPlan[];
+  autoProps: GeneratedPropPlan[];
   shots: GeneratedShotPlan[];
   detectedRelations: string[];
   warnings: string[];
@@ -192,6 +205,51 @@ function extractRequestedCharacterCount(text: string): number | undefined {
   return undefined;
 }
 
+const COLOR_WORDS: Array<{ keyword: string; value: string }> = [
+  { keyword: '검은', value: '#111827' }, { keyword: '검정', value: '#111827' },
+  { keyword: '흰', value: '#f8fafc' }, { keyword: '하얀', value: '#f8fafc' },
+  { keyword: '빨간', value: '#dc2626' }, { keyword: '붉은', value: '#dc2626' },
+  { keyword: '파란', value: '#2563eb' }, { keyword: '푸른', value: '#2563eb' },
+  { keyword: '초록', value: '#16a34a' }, { keyword: '녹색', value: '#16a34a' },
+  { keyword: '노란', value: '#eab308' }, { keyword: '베이지', value: '#d6b58a' },
+  { keyword: '회색', value: '#64748b' }, { keyword: '갈색', value: '#92400e' },
+  { keyword: '분홍', value: '#ec4899' }, { keyword: '보라', value: '#7c3aed' },
+];
+
+const OUTFIT_WORDS = ['교복', '정장', '코트', '드레스', '후드티', '재킷', '셔츠', '작업복', '제복', '군복', '간호사복', '운동복', '가죽 재킷'];
+const OCCUPATION_WORDS = ['경찰관', '간호사', '경찰', '형사', '직원', '요리사', '의사', '군인', '학생'];
+
+function inferPresentation(descriptor: string): CharacterPresentation {
+  if (/여성|여자|여학생|소녀|할머니|간호사/.test(descriptor)) return 'feminine';
+  if (/남성|남자|남학생|소년|할아버지|군인|경찰관|형사/.test(descriptor)) return 'masculine';
+  return 'unspecified';
+}
+
+function inferAgeGroup(descriptor: string): CharacterAgeGroup {
+  if (/아이/.test(descriptor)) return 'child';
+  if (/남학생|여학생|소년|소녀|학생/.test(descriptor)) return 'teen';
+  if (/할아버지|할머니|노인/.test(descriptor)) return 'senior';
+  if (/여성|남성|여자|남자|경찰|형사|직원|요리사|의사|군인|간호사/.test(descriptor)) return 'adult';
+  return 'unspecified';
+}
+
+function inferOutfit(descriptor: string): { summary: string; colors: string[] } {
+  const outfitWord = OUTFIT_WORDS.find((word) => descriptor.includes(word));
+  const colors = unique(COLOR_WORDS.filter((item) => descriptor.includes(item.keyword)).map((item) => item.value));
+  if (outfitWord) {
+    const colorWord = COLOR_WORDS.find((item) => descriptor.includes(item.keyword))?.keyword;
+    return { summary: `${colorWord ? `${colorWord} ` : ''}${outfitWord}`.trim(), colors: colors.length ? colors : ['#475569'] };
+  }
+  return { summary: '기본 의상', colors: colors.length ? colors : ['#475569'] };
+}
+
+function inferHairColor(descriptor: string): string {
+  if (/금발|금색 머리/.test(descriptor)) return '#d6b85a';
+  if (/갈색 머리/.test(descriptor)) return '#6b4423';
+  if (/회색 머리|백발/.test(descriptor)) return '#cbd5e1';
+  return '#1c1917';
+}
+
 function extractCharacters(text: string): GeneratedCharacterPlan[] {
   const properNames = extractProperNames(text);
   const descriptors = extractCharacterDescriptors(text);
@@ -200,8 +258,24 @@ function extractCharacters(text: string): GeneratedCharacterPlan[] {
   const desiredCount = Math.max(values.length, count ?? 0, 1);
   const characters: GeneratedCharacterPlan[] = [];
   for (let index = 0; index < desiredCount; index += 1) {
-    const descriptor = values[index] ?? `인물 ${index + 1}`;
-    characters.push({ name: descriptor, descriptor });
+    const name = values[index] ?? `인물 ${index + 1}`;
+    const descriptor = descriptors[index] ?? name;
+    const outfit = inferOutfit(descriptor);
+    const explicitLead = /주인공/.test(descriptor);
+    const explicitBackground = /엑스트라|배경 인물/.test(descriptor);
+    const role: CharacterRole = explicitLead ? 'lead' : explicitBackground ? 'background' : index === 0 ? 'lead' : index === 1 ? 'supporting' : 'background';
+    characters.push({
+      name,
+      descriptor,
+      role,
+      ageGroup: inferAgeGroup(descriptor),
+      presentation: inferPresentation(descriptor),
+      occupation: OCCUPATION_WORDS.find((word) => descriptor.includes(word)),
+      outfitSummary: outfit.summary,
+      outfitColors: outfit.colors,
+      hairColor: inferHairColor(descriptor),
+      skinTone: '#d6a77a',
+    });
   }
   const nameCounts = new Map<string, number>();
   return characters.map((character) => {
@@ -227,13 +301,13 @@ function extractProps(text: string, characterCount: number): GeneratedPropPlan[]
   for (const definition of PROP_DEFINITIONS) {
     if (!text.includes(definition.keyword)) continue;
     if (definition.keyword === '컵' && text.includes('커피 컵')) continue;
-    result.push({ name: definition.name, count: detectCount(text, definition.keyword) });
+    result.push({ name: definition.name, count: detectCount(text, definition.keyword), source: 'prompt', category: definition.name === '자전거' || definition.name === '자동차' ? 'vehicle' : definition.name === '우산' || definition.name.includes('컵') || definition.name === '가방' || definition.name === '책' || definition.name === '노트북' || definition.name === '병' ? 'handheld' : 'furniture' });
   }
   if (/앉아|앉은|앉혀/.test(text) && !result.some((item) => item.name === '의자') && !result.some((item) => item.name === '소파')) {
-    result.push({ name: '의자', count: Math.max(1, characterCount) });
+    result.push({ name: '의자', count: Math.max(1, characterCount), source: 'prompt', category: 'furniture' });
   }
   if (/카페|식당|대화/.test(text) && result.some((item) => item.name.includes('컵')) && !result.some((item) => item.name === '테이블' || item.name === '책상')) {
-    result.unshift({ name: '테이블', count: 1 });
+    result.unshift({ name: '테이블', count: 1, source: 'prompt', category: 'furniture' });
   }
   return result;
 }
@@ -326,6 +400,10 @@ export function analyzeScenePrompt(input: string): SceneGenerationPlan {
   const props = extractProps(text, characters.length);
   const location = extractLocation(text);
   const atmosphere = extractAtmosphere(text);
+  const environmentPreset = resolveEnvironmentPreset(location);
+  const autoProps: GeneratedPropPlan[] = environmentPreset.props
+    .filter((presetProp) => !props.some((prop) => prop.name === presetProp.name || presetProp.name.includes(prop.name)))
+    .map((presetProp) => ({ name: presetProp.name, count: 1, source: 'preset', category: presetProp.category }));
   const shots = extractShots(text, characters, props);
   const detectedRelations: string[] = [];
   if (/마주\s*보|서로\s*바라/.test(text) && characters.length >= 2) detectedRelations.push('등장인물이 서로 바라봄');
@@ -344,8 +422,10 @@ export function analyzeScenePrompt(input: string): SceneGenerationPlan {
     title: `${location} 장면`,
     location,
     atmosphere,
+    environmentPreset,
     characters,
     props,
+    autoProps,
     shots,
     detectedRelations,
     warnings,
@@ -388,8 +468,25 @@ function averagePosition(entities: Entity[]): Vec3 {
   return [sum[0] / entities.length, sum[1] / entities.length + 1, sum[2] / entities.length];
 }
 
+function promptPropAsset(name: string, category: EntityAssetData['category'] = 'generic'): EntityAssetData {
+  const primitive = /컵|병|우산/.test(name) ? 'cylinder' : /자동차|자전거/.test(name) ? 'box' : 'box';
+  const color = name.includes('우산') ? '#1f2937'
+    : name.includes('자전거') ? '#2563eb'
+      : name.includes('컵') ? '#f8fafc'
+        : name.includes('테이블') || name.includes('책상') ? '#8b5e3c'
+          : name.includes('의자') ? '#8b6f47'
+            : name.includes('가방') ? '#334155'
+              : '#a8a29e';
+  return { category, primitive, color, material: 'matte', source: 'prompt', tags: [name, category] };
+}
+
 function createPropEntities(plan: SceneGenerationPlan): Entity[] {
-  const entities: Entity[] = [];
+  const explicitNames = plan.props.map((prop) => prop.name);
+  const presetEntities = createPresetEntities(plan.environmentPreset).filter((entity) => {
+    if (!entity.asset || !['furniture', 'handheld', 'vehicle'].includes(entity.asset.category)) return true;
+    return !explicitNames.some((name) => entity.name.includes(name) || name.includes(entity.name));
+  });
+  const entities: Entity[] = [...presetEntities];
   let sequence = 0;
   for (const prop of plan.props) {
     const definition = propDefinition(prop.name);
@@ -412,6 +509,7 @@ function createPropEntities(plan: SceneGenerationPlan): Entity[] {
         transform: { position, rotation: [0, 0, 0], scale: [...definition.scale] },
         visible: true,
         locked: false,
+        asset: promptPropAsset(prop.name, prop.category),
       });
       sequence += 1;
     }
@@ -518,7 +616,21 @@ export function buildSceneFromPlan(plan: SceneGenerationPlan, sceneId = 'scene-g
     },
     visible: true,
     locked: false,
-    character: { pose: /앉아|앉은|앉혀/.test(plan.sourceText) && seatedPose ? structuredClone(seatedPose) : createNeutralPose() },
+    character: {
+      pose: /앉아|앉은|앉혀/.test(plan.sourceText) && seatedPose ? structuredClone(seatedPose) : createNeutralPose(),
+      appearance: {
+        role: character.role,
+        descriptor: character.descriptor,
+        ageGroup: character.ageGroup,
+        presentation: character.presentation,
+        occupation: character.occupation,
+        outfitSummary: character.outfitSummary,
+        outfitColors: [...character.outfitColors],
+        hairColor: character.hairColor,
+        skinTone: character.skinTone,
+      },
+    },
+    asset: { category: 'generic', primitive: 'box', color: character.outfitColors[0] ?? '#475569', material: 'matte', source: 'prompt', tags: ['character', character.role, character.outfitSummary] },
   }));
   const props = createPropEntities(plan);
   const baseRelationships = buildBaseRelationships(plan, characters, props);
@@ -549,16 +661,19 @@ export function buildSceneFromPlan(plan: SceneGenerationPlan, sceneId = 'scene-g
     {
       id: 'light-key-generated', name: plan.atmosphere.some((word) => word.includes('밤') || word === '어두운') ? '차가운 키 라이트' : '소프트 키 라이트', type: 'light',
       transform: { position: [-3, 5, 3], rotation: [0, 0, 0], scale: [1.2, 1.2, 1.2] }, visible: true, locked: false,
+      asset: { category: 'lighting', primitive: 'sphere', color: plan.atmosphere.some((word) => word.includes('밤') || word === '차가운') ? '#93c5fd' : '#fef3c7', material: 'emissive', source: 'preset', tags: ['key-light'] },
     },
     {
       id: 'light-fill-generated', name: '필 라이트', type: 'light',
       transform: { position: [3, 3.5, 1], rotation: [0, 0, 0], scale: [0.8, 0.8, 0.8] }, visible: true, locked: false,
+      asset: { category: 'lighting', primitive: 'sphere', color: '#f8fafc', material: 'emissive', source: 'preset', tags: ['fill-light'] },
     },
   ];
   return {
     id: sceneId,
     name: plan.title,
     description: plan.sourceText,
+    environment: createEnvironmentState(plan.environmentPreset, plan.atmosphere),
     entities: [...characters, ...props, ...cameras, ...lights],
     shots,
   };

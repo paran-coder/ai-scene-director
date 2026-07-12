@@ -1,7 +1,9 @@
+import { createEnvironmentState, resolveEnvironmentPreset } from './environmentPresets.ts';
 import { createNeutralPose } from './pose.ts';
 import {
   JOINT_NAMES,
   type ActionBlock,
+  type AssetLibraryItem,
   type Entity,
   type GenerationResult,
   type PoseState,
@@ -11,7 +13,7 @@ import {
   type Vec3,
 } from './types.ts';
 
-export const CURRENT_SCHEMA_VERSION = '0.8.0';
+export const CURRENT_SCHEMA_VERSION = '0.10.0';
 
 export interface ProjectValidationResult {
   success: boolean;
@@ -53,6 +55,73 @@ function isTransform(value: unknown): boolean {
   return isRecord(value) && isVec3(value.position) && isVec3(value.rotation) && isVec3(value.scale);
 }
 
+
+function isAppearance(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return ['lead', 'supporting', 'background'].includes(String(value.role))
+    && typeof value.descriptor === 'string'
+    && ['child', 'teen', 'adult', 'senior', 'unspecified'].includes(String(value.ageGroup))
+    && ['feminine', 'masculine', 'neutral', 'unspecified'].includes(String(value.presentation))
+    && typeof value.outfitSummary === 'string'
+    && Array.isArray(value.outfitColors)
+    && value.outfitColors.every((color) => typeof color === 'string')
+    && typeof value.hairColor === 'string'
+    && typeof value.skinTone === 'string';
+}
+
+function isAsset(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if ('modelAssetId' in value && value.modelAssetId !== undefined && typeof value.modelAssetId !== 'string') return false;
+  return ['environment', 'architecture', 'furniture', 'handheld', 'vehicle', 'decor', 'lighting', 'generic'].includes(String(value.category))
+    && ['box', 'cylinder', 'sphere', 'plane'].includes(String(value.primitive))
+    && typeof value.color === 'string'
+    && ['matte', 'metal', 'glass', 'emissive'].includes(String(value.material))
+    && ['preset', 'prompt', 'manual'].includes(String(value.source))
+    && Array.isArray(value.tags)
+    && value.tags.every((tag) => typeof tag === 'string');
+}
+
+
+function isAssetLibraryItem(value: unknown): value is AssetLibraryItem {
+  if (!isRecord(value)) return false;
+  return typeof value.id === 'string'
+    && typeof value.name === 'string'
+    && value.kind === 'glb'
+    && ['character', 'prop', 'environment'].includes(String(value.category))
+    && typeof value.mimeType === 'string'
+    && isFiniteNumber(value.sizeBytes)
+    && value.sizeBytes >= 0
+    && typeof value.storageKey === 'string'
+    && typeof value.createdAt === 'string'
+    && typeof value.originalFilename === 'string';
+}
+
+function isEnvironment(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return typeof value.presetId === 'string'
+    && typeof value.name === 'string'
+    && typeof value.location === 'string'
+    && typeof value.backgroundColor === 'string'
+    && typeof value.floorColor === 'string'
+    && Array.isArray(value.palette)
+    && value.palette.every((color) => typeof color === 'string')
+    && Array.isArray(value.atmosphere)
+    && value.atmosphere.every((item) => typeof item === 'string');
+}
+
+function defaultAppearance(name: string) {
+  return {
+    role: 'supporting' as const,
+    descriptor: name,
+    ageGroup: 'unspecified' as const,
+    presentation: 'unspecified' as const,
+    outfitSummary: '기본 의상',
+    outfitColors: ['#64748b'],
+    hairColor: '#1c1917',
+    skinTone: '#d6a77a',
+  };
+}
+
 function migrateEntity(raw: Record<string, unknown>, migrated: boolean, warnings: string[]): Entity | null {
   if (typeof raw.id !== 'string' || typeof raw.name !== 'string' || !ENTITY_TYPES.has(String(raw.type))) return null;
   if (!isTransform(raw.transform) || typeof raw.visible !== 'boolean' || typeof raw.locked !== 'boolean') return null;
@@ -60,8 +129,11 @@ function migrateEntity(raw: Record<string, unknown>, migrated: boolean, warnings
   const entity = structuredClone(raw) as unknown as Entity;
   if (entity.type === 'character') {
     if (!entity.character || !isPose(entity.character.pose)) {
-      entity.character = { pose: createNeutralPose() };
-      warnings.push(`${entity.name}: 기본 휴머노이드 포즈를 추가했습니다.`);
+      entity.character = { pose: createNeutralPose(), appearance: defaultAppearance(entity.name) };
+      warnings.push(`${entity.name}: 기본 휴머노이드 포즈와 외형 정보를 추가했습니다.`);
+    } else if (!isAppearance(entity.character.appearance)) {
+      entity.character.appearance = defaultAppearance(entity.name);
+      warnings.push(`${entity.name}: 기본 역할·의상 메타데이터를 추가했습니다.`);
     }
     if (migrated && entity.transform.scale[1] > 1.4) {
       entity.transform.scale = [1, 1, 1];
@@ -70,6 +142,16 @@ function migrateEntity(raw: Record<string, unknown>, migrated: boolean, warnings
     }
   } else {
     delete entity.character;
+  }
+  if (!isAsset(entity.asset)) {
+    entity.asset = {
+      category: entity.type === 'prop' ? 'generic' : entity.type === 'light' ? 'lighting' : 'generic',
+      primitive: entity.type === 'light' ? 'sphere' : 'box',
+      color: entity.type === 'camera' ? '#38bdf8' : entity.type === 'light' ? '#fde047' : entity.type === 'character' ? '#64748b' : '#a8a29e',
+      material: entity.type === 'light' ? 'emissive' : 'matte',
+      source: 'manual',
+      tags: [entity.type],
+    };
   }
   return entity;
 }
@@ -255,6 +337,21 @@ export function validateAndMigrateProject(value: unknown): ProjectValidationResu
   if (!isFiniteNumber(raw.revision)) errors.push('project.revision이 유한한 숫자가 아닙니다.');
   if (typeof raw.activeSceneId !== 'string') errors.push('project.activeSceneId가 없습니다.');
   if (!Array.isArray(raw.scenes) || raw.scenes.length === 0) errors.push('프로젝트에는 최소 한 개의 Scene이 필요합니다.');
+  if (!Array.isArray(raw.assetLibrary)) {
+    raw.assetLibrary = [];
+    warnings.push('빈 GLB 에셋 라이브러리를 추가했습니다.');
+  }
+  const assetLibraryIds = new Set<string>();
+  if (Array.isArray(raw.assetLibrary)) {
+    raw.assetLibrary.forEach((item, index) => {
+      if (!isAssetLibraryItem(item)) {
+        errors.push(`assetLibrary[${index}]: GLB 에셋 정보가 올바르지 않습니다.`);
+        return;
+      }
+      if (assetLibraryIds.has(item.id)) errors.push(`assetLibrary[${index}]: 중복 에셋 ID입니다.`);
+      assetLibraryIds.add(item.id);
+    });
+  }
   if (errors.length || !Array.isArray(raw.scenes)) return { success: false, errors, warnings, migrated };
 
   const sceneIds = new Set<string>();
@@ -270,6 +367,11 @@ export function validateAndMigrateProject(value: unknown): ProjectValidationResu
     }
     if (sceneIds.has(sceneValue.id)) errors.push(`${location}: 중복 Scene ID ${sceneValue.id}입니다.`);
     sceneIds.add(sceneValue.id);
+    if (!isEnvironment(sceneValue.environment)) {
+      const preset = resolveEnvironmentPreset(sceneValue.name);
+      sceneValue.environment = createEnvironmentState(preset, []);
+      warnings.push(`${location}: ${preset.name} 환경 프리셋을 추가했습니다.`);
+    }
     if (!Array.isArray(sceneValue.entities)) {
       errors.push(`${location}.entities가 배열이 아닙니다.`);
       continue;
@@ -286,6 +388,11 @@ export function validateAndMigrateProject(value: unknown): ProjectValidationResu
       if (!entity) {
         errors.push(`${location}.entities[${entityIndex}]: Entity 데이터가 올바르지 않습니다.`);
         continue;
+      }
+      if (entity.asset?.modelAssetId && !assetLibraryIds.has(entity.asset.modelAssetId)) {
+        delete entity.asset.modelAssetId;
+        entity.asset.tags = entity.asset.tags.filter((tag) => tag !== 'imported-glb');
+        warnings.push(`${entity.name}: 찾을 수 없는 GLB 에셋 연결을 해제했습니다.`);
       }
       if (entityIds.has(entity.id)) errors.push(`${location}: 중복 Entity ID ${entity.id}입니다.`);
       entityIds.add(entity.id);

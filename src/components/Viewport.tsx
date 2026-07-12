@@ -1,12 +1,15 @@
 import { Grid, Line, OrbitControls, TransformControls } from '@react-three/drei';
 import { Canvas, useFrame, useThree, type RootState } from '@react-three/fiber';
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { Euler, Group, Matrix4, MeshDepthMaterial, Quaternion, Vector3 } from 'three';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Box3, Euler, Group, Matrix4, Mesh, MeshBasicMaterial, MeshDepthMaterial, Quaternion, Vector3 } from 'three';
 import { entityMaskColor } from '../domain/export';
+import { getAssetObjectUrl } from '../domain/assetStorage';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { calculateHandLocalPosition, createNeutralPose } from '../domain/pose';
 import { findControllingRelationship } from '../domain/relationships';
 import { resolveSceneAtTime } from '../domain/resolver';
-import type { Entity, JointName, PoseState, Relationship, TransformMode, Vec3 } from '../domain/types';
+import type { AssetLibraryCategory, Entity, JointName, PoseState, Relationship, TransformMode, Vec3 } from '../domain/types';
 import { useEditorStore } from '../store/editorStore';
 
 export type CaptureRenderMode = 'beauty' | 'pose' | 'depth' | 'mask';
@@ -68,6 +71,10 @@ function Humanoid({
   onSelectJoint(joint: JointName): void;
 }) {
   const pose: PoseState = entity.character?.pose ?? createNeutralPose();
+  const appearance = entity.character?.appearance;
+  const outfitColor = mode === 'beauty' ? (appearance?.outfitColors[0] ?? color) : color;
+  const skinColor = mode === 'beauty' ? (appearance?.skinTone ?? '#d6a77a') : color;
+  const hairColor = mode === 'beauty' ? (appearance?.hairColor ?? '#1c1917') : color;
   const handle = (joint: JointName) => showJoints
     ? <JointHandle name={joint} selected={selectedJoint === joint} onSelect={onSelectJoint} />
     : null;
@@ -78,35 +85,41 @@ function Humanoid({
         {handle('pelvis')}
         <mesh castShadow={mode === 'beauty'}>
           <boxGeometry args={[0.34, 0.22, 0.22]} />
-          <SurfaceMaterial color={color} mode={mode} />
+          <SurfaceMaterial color={outfitColor} mode={mode} />
         </mesh>
 
         <group position={[0, 0.18, 0]} rotation={pose.spine}>
           {handle('spine')}
           <mesh position={[0, 0.1, 0]} castShadow={mode === 'beauty'}>
             <boxGeometry args={[0.38, 0.28, 0.22]} />
-            <SurfaceMaterial color={color} mode={mode} />
+            <SurfaceMaterial color={outfitColor} mode={mode} />
           </mesh>
 
           <group position={[0, 0.25, 0]} rotation={pose.chest}>
             {handle('chest')}
             <mesh position={[0, 0.08, 0]} castShadow={mode === 'beauty'}>
               <boxGeometry args={[0.48, 0.3, 0.25]} />
-              <SurfaceMaterial color={color} mode={mode} />
+              <SurfaceMaterial color={outfitColor} mode={mode} />
             </mesh>
 
             <group position={[0, 0.24, 0]} rotation={pose.neck}>
               {handle('neck')}
               <mesh position={[0, 0.05, 0]} castShadow={mode === 'beauty'}>
                 <cylinderGeometry args={[0.07, 0.08, 0.12, 12]} />
-                <SurfaceMaterial color={color} mode={mode} />
+                <SurfaceMaterial color={skinColor} mode={mode} />
               </mesh>
               <group position={[0, 0.15, 0]} rotation={pose.head}>
                 {handle('head')}
                 <mesh position={[0, 0.09, 0]} castShadow={mode === 'beauty'}>
                   <sphereGeometry args={[0.16, 22, 16]} />
-                  <SurfaceMaterial color={color} mode={mode} />
+                  <SurfaceMaterial color={skinColor} mode={mode} />
                 </mesh>
+                {mode === 'beauty' && (
+                  <mesh position={[0, 0.18, 0]} scale={[1.04, 0.45, 1.04]}>
+                    <sphereGeometry args={[0.16, 18, 12]} />
+                    <meshStandardMaterial color={hairColor} />
+                  </mesh>
+                )}
                 {mode === 'beauty' && (
                   <mesh position={[0, 0.09, -0.145]}>
                     <boxGeometry args={[0.1, 0.045, 0.025]} />
@@ -118,15 +131,15 @@ function Humanoid({
 
             <group position={[-0.32, 0.16, 0]} rotation={pose.leftShoulder}>
               {handle('leftShoulder')}
-              <Limb length={0.34} radius={0.075} color={color} mode={mode} />
+              <Limb length={0.34} radius={0.075} color={outfitColor} mode={mode} />
               <group position={[0, -0.34, 0]} rotation={pose.leftElbow}>
                 {handle('leftElbow')}
-                <Limb length={0.32} radius={0.065} color={color} mode={mode} />
+                <Limb length={0.32} radius={0.065} color={outfitColor} mode={mode} />
                 <group position={[0, -0.32, 0]} rotation={pose.leftWrist}>
                   {handle('leftWrist')}
                   <mesh position={[0, -0.07, 0]} castShadow={mode === 'beauty'}>
                     <boxGeometry args={[0.12, 0.15, 0.07]} />
-                    <SurfaceMaterial color={color} mode={mode} />
+                    <SurfaceMaterial color={skinColor} mode={mode} />
                   </mesh>
                 </group>
               </group>
@@ -134,15 +147,15 @@ function Humanoid({
 
             <group position={[0.32, 0.16, 0]} rotation={pose.rightShoulder}>
               {handle('rightShoulder')}
-              <Limb length={0.34} radius={0.075} color={color} mode={mode} />
+              <Limb length={0.34} radius={0.075} color={outfitColor} mode={mode} />
               <group position={[0, -0.34, 0]} rotation={pose.rightElbow}>
                 {handle('rightElbow')}
-                <Limb length={0.32} radius={0.065} color={color} mode={mode} />
+                <Limb length={0.32} radius={0.065} color={outfitColor} mode={mode} />
                 <group position={[0, -0.32, 0]} rotation={pose.rightWrist}>
                   {handle('rightWrist')}
                   <mesh position={[0, -0.07, 0]} castShadow={mode === 'beauty'}>
                     <boxGeometry args={[0.12, 0.15, 0.07]} />
-                    <SurfaceMaterial color={color} mode={mode} />
+                    <SurfaceMaterial color={skinColor} mode={mode} />
                   </mesh>
                 </group>
               </group>
@@ -152,15 +165,15 @@ function Humanoid({
 
         <group position={[-0.16, -0.08, 0]} rotation={pose.leftHip}>
           {handle('leftHip')}
-          <Limb length={0.44} radius={0.09} color={color} mode={mode} />
+          <Limb length={0.44} radius={0.09} color={outfitColor} mode={mode} />
           <group position={[0, -0.44, 0]} rotation={pose.leftKnee}>
             {handle('leftKnee')}
-            <Limb length={0.42} radius={0.075} color={color} mode={mode} />
+            <Limb length={0.42} radius={0.075} color={outfitColor} mode={mode} />
             <group position={[0, -0.42, 0]} rotation={pose.leftAnkle}>
               {handle('leftAnkle')}
               <mesh position={[0, -0.035, -0.07]} castShadow={mode === 'beauty'}>
                 <boxGeometry args={[0.15, 0.09, 0.29]} />
-                <SurfaceMaterial color={color} mode={mode} />
+                <SurfaceMaterial color={outfitColor} mode={mode} />
               </mesh>
             </group>
           </group>
@@ -168,15 +181,15 @@ function Humanoid({
 
         <group position={[0.16, -0.08, 0]} rotation={pose.rightHip}>
           {handle('rightHip')}
-          <Limb length={0.44} radius={0.09} color={color} mode={mode} />
+          <Limb length={0.44} radius={0.09} color={outfitColor} mode={mode} />
           <group position={[0, -0.44, 0]} rotation={pose.rightKnee}>
             {handle('rightKnee')}
-            <Limb length={0.42} radius={0.075} color={color} mode={mode} />
+            <Limb length={0.42} radius={0.075} color={outfitColor} mode={mode} />
             <group position={[0, -0.42, 0]} rotation={pose.rightAnkle}>
               {handle('rightAnkle')}
               <mesh position={[0, -0.035, -0.07]} castShadow={mode === 'beauty'}>
                 <boxGeometry args={[0.15, 0.09, 0.29]} />
-                <SurfaceMaterial color={color} mode={mode} />
+                <SurfaceMaterial color={outfitColor} mode={mode} />
               </mesh>
             </group>
           </group>
@@ -184,6 +197,53 @@ function Humanoid({
       </group>
     </group>
   );
+}
+
+
+function normalizeGlbObject(source: Group, category: AssetLibraryCategory, mode: CaptureRenderMode, color: string): Group {
+  const cloned = cloneSkinned(source);
+  const initialBox = new Box3().setFromObject(cloned);
+  const size = initialBox.getSize(new Vector3());
+  const maxDimension = Math.max(size.x, size.y, size.z, 0.0001);
+  const targetSize = category === 'character' ? 1.8 : category === 'environment' ? 4 : 1;
+  cloned.scale.setScalar(targetSize / maxDimension);
+  cloned.updateMatrixWorld(true);
+  const normalizedBox = new Box3().setFromObject(cloned);
+  const center = normalizedBox.getCenter(new Vector3());
+  cloned.position.x -= center.x;
+  cloned.position.z -= center.z;
+  cloned.position.y -= normalizedBox.min.y;
+  cloned.traverse((child) => {
+    if (!(child instanceof Mesh)) return;
+    child.castShadow = mode === 'beauty';
+    child.receiveShadow = mode === 'beauty';
+    if (mode === 'mask') child.material = new MeshBasicMaterial({ color });
+  });
+  const wrapper = new Group();
+  wrapper.add(cloned);
+  return wrapper;
+}
+
+function ImportedGlbShape({ assetId, mode, color, fallback }: { assetId: string; mode: CaptureRenderMode; color: string; fallback: ReactNode }) {
+  const item = useEditorStore((state) => state.project.assetLibrary.find((asset) => asset.id === assetId));
+  const [object, setObject] = useState<Group | null>(null);
+  useEffect(() => {
+    let active = true;
+    setObject(null);
+    if (!item) return () => { active = false; };
+    getAssetObjectUrl(item.storageKey)
+      .then(async (url) => {
+        if (!url) return null;
+        const gltf = await new GLTFLoader().loadAsync(url);
+        return normalizeGlbObject(gltf.scene, item.category, mode, color);
+      })
+      .then((nextObject) => {
+        if (active && nextObject) setObject(nextObject);
+      })
+      .catch(() => active && setObject(null));
+    return () => { active = false; };
+  }, [color, item, mode]);
+  return object ? <primitive object={object} /> : <>{fallback}</>;
 }
 
 function EntityShape({
@@ -203,14 +263,40 @@ function EntityShape({
 }) {
   const baseColor = selected
     ? '#f59e0b'
-    : entity.type === 'character'
-      ? '#64748b'
-      : entity.type === 'prop'
-        ? '#a8a29e'
-        : entity.type === 'camera'
-          ? '#38bdf8'
-          : '#fde047';
+    : entity.asset?.color
+      ?? (entity.type === 'character'
+        ? '#64748b'
+        : entity.type === 'prop'
+          ? '#a8a29e'
+          : entity.type === 'camera'
+            ? '#38bdf8'
+            : '#fde047');
   const color = renderMode === 'pose' ? '#ffffff' : renderMode === 'mask' ? entityMaskColor(entity.id) : baseColor;
+  const modelAssetId = entity.asset?.modelAssetId;
+
+  const proxyShape = entity.type === 'character' ? (
+    <Humanoid
+      entity={entity}
+      color={color}
+      mode={renderMode}
+      showJoints={renderMode === 'beauty' && selected && transformMode === 'pose'}
+      selectedJoint={selectedJoint}
+      onSelectJoint={onSelectJoint}
+    />
+  ) : entity.type === 'camera' ? (
+    <>
+      <mesh><boxGeometry args={[0.8, 0.5, 0.5]} /><SurfaceMaterial color={color} mode={renderMode} wireframe /></mesh>
+      <mesh position={[0, 0, -0.45]} rotation={[Math.PI / 2, 0, 0]}>
+        <coneGeometry args={[0.28, 0.5, 4]} /><SurfaceMaterial color={color} mode={renderMode} wireframe />
+      </mesh>
+    </>
+  ) : entity.type === 'light' ? (
+    <mesh><sphereGeometry args={[0.32, 18, 12]} /><SurfaceMaterial color={color} mode={renderMode} wireframe emissive /></mesh>
+  ) : null;
+
+  if (modelAssetId && entity.type !== 'camera' && entity.type !== 'light' && renderMode !== 'pose') {
+    return <ImportedGlbShape assetId={modelAssetId} mode={renderMode} color={color} fallback={proxyShape ?? <mesh><boxGeometry args={[1, 1, 1]} /><SurfaceMaterial color={color} mode={renderMode} /></mesh>} />;
+  }
 
   if (entity.type === 'character') {
     return (
@@ -240,7 +326,11 @@ function EntityShape({
     return <mesh><sphereGeometry args={[0.32, 18, 12]} /><SurfaceMaterial color={color} mode={renderMode} wireframe emissive /></mesh>;
   }
 
-  return <mesh castShadow={renderMode === 'beauty'}><boxGeometry args={[1, 1, 1]} /><SurfaceMaterial color={color} mode={renderMode} /></mesh>;
+  const primitive = entity.asset?.primitive ?? 'box';
+  if (primitive === 'cylinder') return <mesh castShadow={renderMode === 'beauty'}><cylinderGeometry args={[0.5, 0.5, 1, 20]} /><SurfaceMaterial color={color} mode={renderMode} emissive={entity.asset?.material === 'emissive'} /></mesh>;
+  if (primitive === 'sphere') return <mesh castShadow={renderMode === 'beauty'}><sphereGeometry args={[0.5, 20, 14]} /><SurfaceMaterial color={color} mode={renderMode} emissive={entity.asset?.material === 'emissive'} /></mesh>;
+  if (primitive === 'plane') return <mesh castShadow={renderMode === 'beauty'}><boxGeometry args={[1, 0.05, 1]} /><SurfaceMaterial color={color} mode={renderMode} /></mesh>;
+  return <mesh castShadow={renderMode === 'beauty'}><boxGeometry args={[1, 1, 1]} /><SurfaceMaterial color={color} mode={renderMode} emissive={entity.asset?.material === 'emissive'} /></mesh>;
 }
 
 function SceneEntity({

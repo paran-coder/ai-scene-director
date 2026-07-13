@@ -11,7 +11,7 @@ import { analyzeDirectorWorkflow, type DirectorActionId } from './domain/directo
 import { buildShotExportPreflight } from './domain/shotExportPreflight';
 import { buildCommandCatalog, type AppCommandId } from './domain/commandPalette';
 import { appendCreatorSessionEvent, createCreatorSession, saveCreatorSession, type CreatorSessionEventType } from './domain/sessionInsights';
-import { buildCameraPrompt, buildMotionPrompt, buildShotPackageManifest, buildShotPrompt, createStoredZip, DEFAULT_NEGATIVE_PROMPT, downloadBlob, safeFilename } from './domain/export';
+import { buildCameraPrompt, buildMotionPrompt, buildShotPackageManifest, buildShotPrompt, createStoredZip, DEFAULT_NEGATIVE_PROMPT, downloadBlob, safeFilename, verifyAIExportArchive, verifyStoredZipEntries } from './domain/export';
 import { POSE_PRESETS } from './domain/pose';
 import { ENVIRONMENT_PRESETS } from './domain/environmentPresets';
 import { describeRelationship, findControllingRelationship } from './domain/relationships';
@@ -203,6 +203,13 @@ const jointLabels: Record<JointName, string> = {
 const RAD_TO_DEG = 180 / Math.PI;
 const DEG_TO_RAD = Math.PI / 180;
 
+const LIGHT_CONTROL_CAPABILITIES = {
+  directional: { range: false, angle: false, target: false, shadow: true, note: '방향광은 장면 전체로 평행하게 비추므로 범위와 각도는 적용되지 않습니다.' },
+  point: { range: true, angle: false, target: false, shadow: true, note: '포인트광은 사방으로 퍼지므로 각도는 적용되지 않습니다. 범위로 도달 거리를 조절하세요.' },
+  spot: { range: true, angle: true, target: true, shadow: true, note: '스포트라이트는 범위·각도·조명 대상을 모두 사용합니다.' },
+  ambient: { range: false, angle: false, target: false, shadow: false, note: '환경광은 장면 전체 밝기만 보정하므로 범위, 각도, 그림자는 적용되지 않습니다.' },
+} as const;
+
 export default function App() {
   useEffect(() => {
     const frame = requestAnimationFrame(() => { void reportNativeSmokeReady(); });
@@ -345,6 +352,7 @@ export default function App() {
   const baseSelected = scene.entities.find((item) => item.id === selectedEntityId) ?? null;
   const resolvedEntities = useMemo(() => resolveSceneAtTime(scene, shot, playheadTime), [scene, shot, playheadTime]);
   const selected = resolvedEntities.find((item) => item.id === selectedEntityId) ?? null;
+  const selectedLightCapabilities = selected?.type === 'light' && selected.light ? LIGHT_CONTROL_CAPABILITIES[selected.light.kind] : null;
   const exportPreflight = useMemo(() => buildShotExportPreflight(scene, shot, { renderAvailable: runtimeDiagnostics?.status !== 'unsupported' }), [scene, shot, runtimeDiagnostics?.status]);
   const controlledRelationship = selected ? findControllingRelationship(shot.relationships, selected.id) : undefined;
   const [command, setCommand] = useState('');
@@ -895,8 +903,9 @@ export default function App() {
         { name: 'end_frame.png', data: endFrame },
         { name: 'video_prompt.txt', data: composeAIExportPrompt('video') },
       ]);
+      await verifyStoredZipEntries(zip, ['start_frame.png', 'end_frame.png', 'video_prompt.txt']);
       downloadBlob(zip, `${safeFilename(project.name)}_${safeFilename(shot.name)}_start-end.zip`);
-      setExportStatus('시작·종료 이미지 다운로드 완료');
+      setExportStatus('시작·종료 이미지 다운로드 완료 · ZIP 구성 검증');
     } catch (error) {
       setExportStatus(error instanceof Error ? error.message : '시작·종료 이미지를 만들지 못했습니다.');
     } finally {
@@ -946,9 +955,9 @@ export default function App() {
       );
       if (mode === 'video') files.push({ name: 'prompts/motion_prompt.txt', data: buildMotionPrompt(scene, shot) });
 
-      const manifest = buildShotPackageManifest(project, scene, shot);
+      const manifest = buildShotPackageManifest(project, scene, shot, mode);
       files.push(
-        { name: 'shot_manifest.json', data: JSON.stringify({ ...manifest, aiExportMode: mode }, null, 2) },
+        { name: 'shot_manifest.json', data: JSON.stringify(manifest, null, 2) },
         { name: '사용법.txt', data: mode === 'image'
           ? 'reference.png을 기준 이미지로 사용하고 final_prompt.txt를 프롬프트에 붙여넣으세요. 필요하면 Pose, Depth, entity_mask를 생성 도구의 제어 이미지로 연결하세요.'
           : 'start_frame.png과 end_frame.png을 영상 생성 도구의 시작·종료 프레임으로 사용하고 final_prompt.txt를 붙여넣으세요. motion_prompt와 camera_prompt는 동작 및 카메라 지시입니다.' },
@@ -956,9 +965,11 @@ export default function App() {
 
       setExportStatus(`${mode === 'image' ? '이미지' : '영상'} AI 자료 압축 중`);
       const zip = await createStoredZip(files);
+      setExportStatus(`${mode === 'image' ? '이미지' : '영상'} AI 자료 무결성 검사`);
+      const verification = await verifyAIExportArchive(zip, mode);
       const suffix = mode === 'image' ? 'image-ai' : 'video-ai';
       downloadBlob(zip, `${safeFilename(project.name)}_${safeFilename(shot.name)}_${suffix}.zip`);
-      setExportStatus(`${mode === 'image' ? '이미지' : '영상'} AI용 내보내기 완료`);
+      setExportStatus(`${mode === 'image' ? '이미지' : '영상'} AI용 내보내기 완료 · ${verification.fileCount}개 파일 검증`);
       recordCreatorEvent('export_completed', { kind: `ai-${mode}`, actionCount: shot.actions.length });
     } catch (error) {
       recordCreatorEvent('error', { area: 'ai-export' });
@@ -1388,7 +1399,7 @@ export default function App() {
                 </section>
               )}
 
-              {selected.type === 'light' && selected.light && (
+              {selected.type === 'light' && selected.light && selectedLightCapabilities && (
                 <section className="camera-light-inspector">
                   <div className="section-title-row"><h3>조명 · Shot Override</h3><span>{selected.light.kind}</span></div>
                   <label className="stacked-label">유형
@@ -1398,11 +1409,12 @@ export default function App() {
                   </label>
                   <div className="axis-fields two">
                     <label>세기 <NumberField disabled={previewLocked} value={selected.light.intensity} step={0.1} onChange={(value) => updateSelectedLight({ intensity: value })} /></label>
-                    <label>범위 <NumberField disabled={previewLocked} value={selected.light.range} step={0.5} onChange={(value) => updateSelectedLight({ range: value })} /></label>
-                    <label>각도 <NumberField disabled={previewLocked} value={selected.light.angle * RAD_TO_DEG} step={5} onChange={(value) => updateSelectedLight({ angle: value * DEG_TO_RAD })} /></label>
+                    <label className={!selectedLightCapabilities.range ? 'field-disabled' : ''}>범위 <NumberField disabled={previewLocked || !selectedLightCapabilities.range} value={selected.light.range} step={0.5} onChange={(value) => updateSelectedLight({ range: value })} /></label>
+                    <label className={!selectedLightCapabilities.angle ? 'field-disabled' : ''}>각도 <NumberField disabled={previewLocked || !selectedLightCapabilities.angle} value={selected.light.angle * RAD_TO_DEG} step={5} onChange={(value) => updateSelectedLight({ angle: value * DEG_TO_RAD })} /></label>
                     <label>색상 <input disabled={previewLocked} type="color" value={selected.light.color} onChange={(event) => updateSelectedLight({ color: event.target.value })} /></label>
                   </div>
-                  {selected.light.kind === 'spot' && (
+                  <p className="help-text inline-help">{selectedLightCapabilities.note}</p>
+                  {selectedLightCapabilities.target && (
                     <label className="stacked-label">조명 대상
                       <select disabled={previewLocked} value={selected.light.targetEntityId ?? ''} onChange={(event) => updateSelectedLight({ targetEntityId: event.target.value || undefined })}>
                         <option value="">회전 방향 사용</option>
@@ -1410,7 +1422,7 @@ export default function App() {
                       </select>
                     </label>
                   )}
-                  <label className="toggle-row"><input type="checkbox" checked={selected.light.castShadow} onChange={(event) => updateSelectedLight({ castShadow: event.target.checked })} /> 그림자 생성</label>
+                  <label className={`toggle-row ${!selectedLightCapabilities.shadow ? 'disabled' : ''}`}><input disabled={previewLocked || !selectedLightCapabilities.shadow} type="checkbox" checked={selected.light.castShadow} onChange={(event) => updateSelectedLight({ castShadow: event.target.checked })} /> 그림자 생성</label>
                 </section>
               )}
 

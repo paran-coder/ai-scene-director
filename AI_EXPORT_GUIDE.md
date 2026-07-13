@@ -45,6 +45,8 @@ shot_manifest.json
 
 일반 이미지 AI에서는 `reference.png + final_prompt.txt`부터 사용하고, 제어 이미지를 지원하는 워크플로에서는 Pose·Depth·Mask를 추가합니다.
 
+이미지용 `shot_manifest.json`의 파일 경로는 위 이미지용 구성과 일치하며 영상용 시작·종료 파일을 참조하지 않습니다.
+
 ## 영상 생성용
 
 ```text
@@ -69,6 +71,8 @@ shot_manifest.json
 - 인물·소품 움직임: `motion_prompt.txt`
 - 카메라 움직임: `camera_prompt.txt`
 - 샷 길이와 구조 자동화: `shot_manifest.json`
+
+영상용 `shot_manifest.json`은 시작·종료 프레임과 시작·종료 제어 이미지 경로를 참조합니다.
 
 ## 간단 내보내기
 
@@ -110,3 +114,5 @@ shot_manifest.json      → 자동화·워크플로 데이터
 `이미지용 자료 만들기`와 `영상용 자료 만들기`는 외부 생성 서비스를 여는 버튼이 아닙니다. 각 생성 AI에 업로드할 ZIP 자료의 구성을 확인하고 다운로드하는 설정 화면을 엽니다.
 
 영상용 설정에서는 `영상 AI 자료 ZIP 만들기`를 눌러 `start_frame.png`, `end_frame.png`, 동작·카메라 프롬프트와 제어 이미지를 다운로드합니다.
+
+RC14에서는 ZIP 다운로드 직전에 파일 목록, CRC, PNG 기본 구조, 텍스트 인코딩, 매니페스트 모드와 파일 참조를 검사합니다. 검증에 실패한 자료는 다운로드하지 않고 오류 메시지를 표시합니다.

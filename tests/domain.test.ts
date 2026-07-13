@@ -2,7 +2,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { calculateAnkleLocalPosition, calculateHandLocalPosition, calculateHumanoidJointLocalPositions, findPosePreset, groundFeet, solveArmIK, solveLegIK } from '../src/domain/pose.ts';
-import { buildMotionPrompt, buildShotPackageManifest, buildShotPrompt, createStoredZip } from '../src/domain/export.ts';
+import { AI_EXPORT_FILE_PATHS, buildMotionPrompt, buildShotPackageManifest, buildShotPrompt, createStoredZip, verifyAIExportArchive } from '../src/domain/export.ts';
 import { resolveEntity, resolveEntityWithoutRelationships, resolveScene, resolveSceneAtTime } from '../src/domain/resolver.ts';
 import { sampleProject } from '../src/domain/sampleProject.ts';
 import { applyTransaction, revertTransaction } from '../src/domain/transactions.ts';
@@ -111,7 +111,7 @@ test('0.5 프로젝트를 최신 스키마로 변환한다', () => {
   shots.forEach((shot) => delete shot.actions);
   const result = validateAndMigrateProject(legacy);
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '1.0.0-rc.13');
+  assert.equal(result.project?.schemaVersion, '1.0.0-rc.15');
   assert.deepEqual(result.project?.scenes[0].shots[0].actions, []);
   assert.equal(result.migrated, true);
 });
@@ -318,11 +318,31 @@ test('Shot Package Manifest는 시작·종료 상태와 카메라를 포함한�
   const shot = scene.shots[0];
   shot.actions.push(action({ type: 'walk', actorEntityId: 'character-a', duration: 2, parameters: { direction: [0, 0, -1], distance: 2 } }));
   const manifest = buildShotPackageManifest(project, scene, shot);
-  assert.equal(manifest.schemaVersion, '1.0.0-rc.13');
+  assert.equal(manifest.schemaVersion, '1.0.0-rc.15');
   assert.equal(manifest.camera?.id, shot.cameraEntityId);
   const character = manifest.entities.find((entity) => entity.id === 'character-a')!;
   assert.notDeepEqual(character.start.transform.position, character.end.transform.position);
   assert.match(character.maskColor, /^hsl\(/);
+});
+
+test('이미지·영상 AI 매니페스트는 실제 ZIP 파일 경로만 참조한다', () => {
+  const project = cloneSample();
+  const scene = project.scenes[0];
+  const shot = scene.shots[0];
+  const imageManifest = buildShotPackageManifest(project, scene, shot, 'image');
+  const videoManifest = buildShotPackageManifest(project, scene, shot, 'video');
+
+  assert.equal(imageManifest.aiExportMode, 'image');
+  assert.equal(imageManifest.files.referenceFrame, 'frames/reference.png');
+  assert.equal(imageManifest.files.finalPrompt, 'prompts/final_prompt.txt');
+  assert.equal('startFrame' in imageManifest.files, false);
+  assert.ok(Object.values(imageManifest.files).every((path) => AI_EXPORT_FILE_PATHS.image.includes(path)));
+
+  assert.equal(videoManifest.aiExportMode, 'video');
+  assert.equal(videoManifest.files.startFrame, 'frames/start_frame.png');
+  assert.equal(videoManifest.files.motionPrompt, 'prompts/motion_prompt.txt');
+  assert.equal('referenceFrame' in videoManifest.files, false);
+  assert.ok(Object.values(videoManifest.files).every((path) => AI_EXPORT_FILE_PATHS.video.includes(path)));
 });
 
 test('Shot 프롬프트는 등장 객체와 행동을 설명한다', () => {
@@ -346,6 +366,57 @@ test('무압축 ZIP 생성기는 PK 헤더와 파일명을 포함한다', async 
   assert.match(text, /scene_prompt\.txt/);
 });
 
+test('무압축 ZIP은 파일 내용·중앙 디렉터리·CRC를 다시 검증한다', async () => {
+  const zip = await createStoredZip([
+    { name: 'prompts/final_prompt.txt', data: '검증 프롬프트' },
+    { name: 'shot_manifest.json', data: '{"ok":true}' },
+  ]);
+  const files = await readStoredZip(zip);
+  assert.equal(new TextDecoder().decode(files.get('prompts/final_prompt.txt')), '검증 프롬프트');
+  await assert.rejects(
+    () => createStoredZip([{ name: 'same.txt', data: 'a' }, { name: 'same.txt', data: 'b' }]),
+    /중복 파일 경로/,
+  );
+
+  const corruptBytes = new Uint8Array(await zip.arrayBuffer());
+  const firstNameLength = new DataView(corruptBytes.buffer).getUint16(26, true);
+  const firstExtraLength = new DataView(corruptBytes.buffer).getUint16(28, true);
+  corruptBytes[30 + firstNameLength + firstExtraLength] ^= 0xff;
+  await assert.rejects(() => readStoredZip(new Blob([corruptBytes], { type: 'application/zip' })), /체크섬/);
+});
+
+test('이미지·영상 AI ZIP은 PNG·텍스트·매니페스트 경로를 다운로드 전에 검증한다', async () => {
+  const project = cloneSample();
+  const scene = project.scenes[0];
+  const shot = scene.shots[0];
+  const png = new Uint8Array(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X2NDNwAAAABJRU5ErkJggg==', 'base64'));
+
+  for (const mode of ['image', 'video'] as const) {
+    const manifest = buildShotPackageManifest(project, scene, shot, mode);
+    const zip = await createStoredZip(AI_EXPORT_FILE_PATHS[mode].map((path) => ({
+      name: path,
+      data: path.endsWith('.png') ? png : path === 'shot_manifest.json' ? JSON.stringify(manifest) : `${path} 내용`,
+    })));
+    const result = await verifyAIExportArchive(zip, mode);
+    assert.equal(result.fileCount, AI_EXPORT_FILE_PATHS[mode].length);
+  }
+
+  const imageManifest = buildShotPackageManifest(project, scene, shot, 'image');
+  const mismatched = await createStoredZip(AI_EXPORT_FILE_PATHS.image.map((path) => ({
+    name: path,
+    data: path.endsWith('.png') ? png : path === 'shot_manifest.json' ? JSON.stringify({ ...imageManifest, aiExportMode: 'video' }) : `${path} 내용`,
+  })));
+  await assert.rejects(() => verifyAIExportArchive(mismatched, 'image'), /내보내기 모드/);
+
+  const incompleteManifest = structuredClone(imageManifest);
+  delete incompleteManifest.files.finalPrompt;
+  const incomplete = await createStoredZip(AI_EXPORT_FILE_PATHS.image.map((path) => ({
+    name: path,
+    data: path.endsWith('.png') ? png : path === 'shot_manifest.json' ? JSON.stringify(incompleteManifest) : `${path} 내용`,
+  })));
+  await assert.rejects(() => verifyAIExportArchive(incomplete, 'image'), /파일 목록/);
+});
+
 
 test('0.6 프로젝트는 generationResults를 추가해 0.7로 마이그레이션한다', () => {
   const legacy = cloneSample() as unknown as Record<string, unknown>;
@@ -355,7 +426,7 @@ test('0.6 프로젝트는 generationResults를 추가해 0.7로 마이그레이�
   delete shots[0].generationResults;
   const result = validateAndMigrateProject(legacy);
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '1.0.0-rc.13');
+  assert.equal(result.project?.schemaVersion, '1.0.0-rc.15');
   assert.deepEqual(result.project?.scenes[0].shots[0].generationResults, []);
 });
 
@@ -501,7 +572,7 @@ test('0.7 프로젝트는 0.10으로 마이그레이션되고 Scene 설명을 �
   scenes[0].description = '테스트 장면 설명';
   const result = validateAndMigrateProject(legacy);
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '1.0.0-rc.13');
+  assert.equal(result.project?.schemaVersion, '1.0.0-rc.15');
   assert.equal(result.project?.scenes[0].description, '테스트 장면 설명');
 });
 
@@ -543,7 +614,7 @@ test('0.8 프로젝트는 환경·외형·에셋 메타데이터를 추가해 0.
   delete character.appearance;
   const result = validateAndMigrateProject(legacy);
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '1.0.0-rc.13');
+  assert.equal(result.project?.schemaVersion, '1.0.0-rc.15');
   assert.ok(result.project?.scenes[0].environment);
   assert.ok(result.project?.scenes[0].entities[0].asset);
   assert.ok(result.project?.scenes[0].entities[0].character?.appearance);
@@ -556,7 +627,7 @@ test('0.9 프로젝트는 빈 GLB 에셋 라이브러리를 추가해 0.10으로
   delete legacy.assetLibrary;
   const result = validateAndMigrateProject(legacy);
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '1.0.0-rc.13');
+  assert.equal(result.project?.schemaVersion, '1.0.0-rc.15');
   assert.deepEqual(result.project?.assetLibrary, []);
 });
 
@@ -724,7 +795,7 @@ test('프로젝트 번들은 project.json과 로컬 GLB를 함께 저장하고 �
   await deleteAssetBlob(item.storageKey);
   const imported = await importProjectBundle(exported.blob);
   assert.deepEqual(imported.restoredAssetIds, [item.id]);
-  assert.equal(imported.project.schemaVersion, '1.0.0-rc.13');
+  assert.equal(imported.project.schemaVersion, '1.0.0-rc.15');
   const restored = await getAssetBlob(item.storageKey);
   assert.equal(restored?.size, glb.size);
 });
@@ -746,7 +817,7 @@ test('0.10 프로젝트는 에셋 라이브러리를 보존하며 0.11로 변환
   legacy.schemaVersion = '0.10.0';
   const result = validateAndMigrateProject(legacy);
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '1.0.0-rc.13');
+  assert.equal(result.project?.schemaVersion, '1.0.0-rc.15');
 });
 
 test('수동 본 매핑은 중복 본을 제거하고 상태·누락 관절을 다시 계산한다', async () => {
@@ -830,7 +901,7 @@ test('0.11 리그 데이터는 축 보정 기본값을 추가해 0.12로 변환�
   });
   const result = validateAndMigrateProject(legacy);
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '1.0.0-rc.13');
+  assert.equal(result.project?.schemaVersion, '1.0.0-rc.15');
   assert.deepEqual(result.project?.assetLibrary[0].rig?.axisCorrections, {});
 });
 
@@ -919,7 +990,7 @@ test('0.12 리그 신체 비율은 다리와 골반 기본값을 추가해 0.13�
   });
   const result = validateAndMigrateProject(legacy);
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '1.0.0-rc.13');
+  assert.equal(result.project?.schemaVersion, '1.0.0-rc.15');
   assert.ok(result.project?.assetLibrary[0].rig?.proportions?.leftLeg);
   assert.equal(result.project?.assetLibrary[0].rig?.proportions?.pelvisHeight, 0.9);
 });
@@ -959,7 +1030,7 @@ test('0.13 프로젝트는 카메라·조명 설정과 참조 이미지 배열�
   legacy.scenes[0].entities.push({ id: 'legacy-light', name: '이전 조명', type: 'light', transform: { position: [0, 3, 0], rotation: [0, 0, 0], scale: [1, 1, 1] }, visible: true, locked: false });
   const result = validateAndMigrateProject(legacy);
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '1.0.0-rc.13');
+  assert.equal(result.project?.schemaVersion, '1.0.0-rc.15');
   assert.deepEqual(result.project?.scenes[0].referenceImages, []);
   assert.equal(result.project?.scenes[0].entities.find((entity) => entity.id === 'camera-wide')?.camera?.fov, 48);
   assert.equal(result.project?.scenes[0].entities.find((entity) => entity.id === 'legacy-light')?.light?.kind, 'directional');
@@ -1059,7 +1130,7 @@ test('0.14 인라인 참조 이미지는 로컬 에셋 storageKey를 추가해 0
   legacy.scenes[0].referenceImages.push({ id: 'legacy-reference', name: '이전 참조', dataUrl: 'data:image/png;base64,AA==', mimeType: 'image/png', sizeBytes: 1, opacity: 0.5, visible: true, fit: 'contain' });
   const result = validateAndMigrateProject(legacy);
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '1.0.0-rc.13');
+  assert.equal(result.project?.schemaVersion, '1.0.0-rc.15');
   assert.equal(result.project?.scenes[0].referenceImages[0].storageKey, 'reference-image:legacy-reference');
   assert.ok(result.project?.scenes[0].referenceImages[0].dataUrl?.startsWith('data:image/'));
 });
@@ -1117,7 +1188,7 @@ test('data URL 참조 이미지는 동일 MIME Blob으로 변환된다', async (
 
 test('Tauri 데스크톱 구성은 Vite dist와 전역 브리지를 사용한다', () => {
   const config = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
-  assert.equal(config.version, '1.0.0-rc.13');
+  assert.equal(config.version, '1.0.0-rc.15');
   assert.equal(config.build.frontendDist, '../dist');
   assert.equal(config.app.withGlobalTauri, true);
   assert.equal(config.app.windows[0].label, 'main');
@@ -1132,7 +1203,7 @@ test('0.15 프로젝트는 스포트라이트 대상 데이터를 검증해 0.16
   });
   const result = validateAndMigrateProject(legacy);
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '1.0.0-rc.13');
+  assert.equal(result.project?.schemaVersion, '1.0.0-rc.15');
   assert.equal(result.project?.scenes[0].entities.find((entity) => entity.id === 'spot-migrate')?.light?.targetEntityId, undefined);
   assert.ok(result.warnings.some((warning) => warning.includes('스포트라이트 대상')));
 });
@@ -1251,7 +1322,7 @@ test('대표 베타 시나리오는 자연어 Scene부터 Action·Manifest·프�
   const project = cloneSample();
   project.scenes = [generated.scene];
   project.activeSceneId = generated.scene.id;
-  project.schemaVersion = '1.0.0-rc.13';
+  project.schemaVersion = '1.0.0-rc.15';
   const validation = validateAndMigrateProject(project);
   assert.equal(validation.success, true);
   const scene = validation.project!.scenes[0];
@@ -1259,11 +1330,11 @@ test('대표 베타 시나리오는 자연어 Scene부터 Action·Manifest·프�
   assert.ok(scene.entities.some((entity) => entity.type === 'character'));
   assert.ok(scene.entities.some((entity) => entity.type === 'camera'));
   const manifest = buildShotPackageManifest(validation.project!, scene, shot);
-  assert.equal(manifest.schemaVersion, '1.0.0-rc.13');
+  assert.equal(manifest.schemaVersion, '1.0.0-rc.15');
   assert.ok(manifest.entities.length > 0);
   const bundle = await createProjectBundle(validation.project!);
   const imported = await importProjectBundle(bundle.blob);
-  assert.equal(imported.project.schemaVersion, '1.0.0-rc.13');
+  assert.equal(imported.project.schemaVersion, '1.0.0-rc.15');
   assert.equal(imported.project.scenes[0].shots.length, scene.shots.length);
 });
 
@@ -1357,10 +1428,10 @@ test('복구 저널 v2는 체크섬과 순번으로 손상된 스냅샷을 거�
 test('1.0 RC 프로젝트 스키마와 데스크톱 패키지 버전이 일치한다', () => {
   const result = validateAndMigrateProject(cloneSample());
   assert.equal(result.success, true);
-  assert.equal(result.project?.schemaVersion, '1.0.0-rc.13');
+  assert.equal(result.project?.schemaVersion, '1.0.0-rc.15');
   const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   const tauri = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
-  assert.equal(packageJson.version, '1.0.0-rc.13');
+  assert.equal(packageJson.version, '1.0.0-rc.15');
   assert.equal(tauri.version, packageJson.version);
 });
 
@@ -1397,7 +1468,7 @@ test('지원 번들은 진단·복구 요약·시각 스냅샷을 하나의 ZIP�
     runtime: evaluateRuntimeCapabilities({ webgl: true, webgl2: true, indexedDb: true, fileSystemAccess: false, tauri: false }),
     snapshot,
     recoverySnapshots: listRecoverySnapshots(),
-    appVersion: '1.0.0-rc.13',
+    appVersion: '1.0.0-rc.15',
     generatedAt: new Date('2026-07-12T23:30:00.000Z'),
   });
   const files = await readStoredZip(bundle);
@@ -1405,7 +1476,7 @@ test('지원 번들은 진단·복구 요약·시각 스냅샷을 하나의 ZIP�
     assert.ok(files.has(name), `${name} missing`);
   }
   const manifest = JSON.parse(new TextDecoder().decode(files.get('support_manifest.json')));
-  assert.equal(manifest.appVersion, '1.0.0-rc.13');
+  assert.equal(manifest.appVersion, '1.0.0-rc.15');
   assert.equal(manifest.privacy.localAssetBinaryIncluded, false);
   clearRecoverySnapshots();
 });
@@ -1424,7 +1495,7 @@ test('지원 번들의 구조 프로젝트는 프롬프트·로컬 키·서버 �
     outputs: [{ nodeId: '1', filename: 'secret.png', subfolder: 'private', type: 'output', kind: 'image' }],
   });
   const report = await analyzeProjectHealth(project);
-  const bundle = await createSupportBundle({ project, report, appVersion: '1.0.0-rc.13' });
+  const bundle = await createSupportBundle({ project, report, appVersion: '1.0.0-rc.15' });
   const files = await readStoredZip(bundle);
   const text = new TextDecoder().decode(files.get('project_structure.json'));
   for (const secret of ['비밀 프로젝트', '비밀 프롬프트 문장', 'private-storage-key', 'http://private-server:8188', 'private-workflow', 'secret.png']) {
@@ -1782,19 +1853,19 @@ test('동일한 버전과 릴리스 실행 ID를 가진 3개 OS 증거만 무결
   const sha = 'a'.repeat(64);
   const evidence = (platform: 'linux' | 'windows' | 'macos') => ({
     browser: {
-      status: 'pass', platform, version: '1.0.0-rc.13', releaseId: 'release-test-001', generatedAt: '2026-07-13T00:00:00.000Z',
+      status: 'pass', platform, version: '1.0.0-rc.15', releaseId: 'release-test-001', generatedAt: '2026-07-13T00:00:00.000Z',
       interaction: { commandPaletteOpen: true, commandInputFocused: true, commandCount: 21, buttonCount: 90 },
     },
     artifacts: {
-      status: 'pass', platform, version: '1.0.0-rc.13', releaseId: 'release-test-001', generatedAt: '2026-07-13T00:00:01.000Z',
+      status: 'pass', platform, version: '1.0.0-rc.15', releaseId: 'release-test-001', generatedAt: '2026-07-13T00:00:01.000Z',
       artifacts: [{ path: `bundle/${platform}/installer`, bytes: 1024, sha256: sha }],
     },
     runtime: {
-      status: 'pass', platform, version: '1.0.0-rc.13', appVersion: '1.0.0-rc.13', releaseId: 'release-test-001', generatedAt: '2026-07-13T00:00:02.000Z',
+      status: 'pass', platform, version: '1.0.0-rc.15', appVersion: '1.0.0-rc.15', releaseId: 'release-test-001', generatedAt: '2026-07-13T00:00:02.000Z',
       webviewLoaded: true, reactReady: true, exitCode: 0, executableBytes: 2048, executableSha256: sha,
     },
   });
-  const result = validateReleaseEvidenceMatrix({ linux: evidence('linux'), windows: evidence('windows'), macos: evidence('macos') }, '1.0.0-rc.13', 'release-test-001');
+  const result = validateReleaseEvidenceMatrix({ linux: evidence('linux'), windows: evidence('windows'), macos: evidence('macos') }, '1.0.0-rc.15', 'release-test-001');
   assert.equal(result.status, 'pass');
   assert.equal(result.releaseId, 'release-test-001');
   assert.ok(result.platforms.every((platform) => platform.status === 'pass'));
@@ -1803,18 +1874,18 @@ test('동일한 버전과 릴리스 실행 ID를 가진 3개 OS 증거만 무결
 test('다른 CI 실행의 증거·잘못된 체크섬·React 미준비 보고서는 릴리스 증거에서 차단한다', () => {
   const result = validatePlatformReleaseEvidence('linux', {
     browser: {
-      status: 'pass', platform: 'linux', version: '1.0.0-rc.13', releaseId: 'release-a', generatedAt: '2026-07-13T00:00:00.000Z',
+      status: 'pass', platform: 'linux', version: '1.0.0-rc.15', releaseId: 'release-a', generatedAt: '2026-07-13T00:00:00.000Z',
       interaction: { commandPaletteOpen: true, commandInputFocused: true, commandCount: 21, buttonCount: 90 },
     },
     artifacts: {
-      status: 'pass', platform: 'linux', version: '1.0.0-rc.13', releaseId: 'release-b', generatedAt: '2026-07-13T00:00:01.000Z',
+      status: 'pass', platform: 'linux', version: '1.0.0-rc.15', releaseId: 'release-b', generatedAt: '2026-07-13T00:00:01.000Z',
       artifacts: [{ path: 'bundle/app.deb', bytes: 1024, sha256: 'not-a-sha' }],
     },
     runtime: {
-      status: 'pass', platform: 'linux', version: '1.0.0-rc.13', appVersion: '1.0.0-rc.8', releaseId: 'release-a', generatedAt: '2026-07-13T00:00:02.000Z',
+      status: 'pass', platform: 'linux', version: '1.0.0-rc.15', appVersion: '1.0.0-rc.8', releaseId: 'release-a', generatedAt: '2026-07-13T00:00:02.000Z',
       webviewLoaded: true, reactReady: false, exitCode: 2, executableBytes: 2048, executableSha256: 'b'.repeat(64),
     },
-  }, '1.0.0-rc.13', 'release-a');
+  }, '1.0.0-rc.15', 'release-a');
   assert.equal(result.status, 'fail');
   assert.ok(result.issues.some((issue) => issue.includes('실행 ID')));
   assert.ok(result.issues.some((issue) => issue.includes('SHA-256')));
@@ -1822,7 +1893,7 @@ test('다른 CI 실행의 증거·잘못된 체크섬·React 미준비 보고서
   assert.ok(result.issues.some((issue) => issue.includes('버전')));
 });
 
-test('RC13 릴리스 파이프라인은 증거 ID·체크섬 매니페스트와 1.0 승격 차단 도구를 포함한다', () => {
+test('RC15 릴리스 파이프라인은 증거 ID·체크섬 매니페스트와 1.0 승격 차단 도구를 포함한다', () => {
   const workflow = readFileSync(new URL('../.github/workflows/desktop-build.yml', import.meta.url), 'utf8');
   const gate = readFileSync(new URL('../scripts/release-gate.mjs', import.meta.url), 'utf8');
   const promote = readFileSync(new URL('../scripts/promote-release.mjs', import.meta.url), 'utf8');
@@ -1920,6 +1991,8 @@ test('AI용 내보내기는 목적 선택과 사전점검 후에만 실제 렌�
   const dialogSource = readFileSync(new URL('../src/components/AIExportDialog.tsx', import.meta.url), 'utf8');
   assert.ok(appSource.includes('requestAIExport'));
   assert.ok(appSource.includes('performAIExport'));
+  assert.ok(appSource.includes('verifyAIExportArchive(zip, mode)'));
+  assert.ok(appSource.includes('buildShotPackageManifest(project, scene, shot, mode)'));
   assert.ok(appSource.includes('<AIExportDialog'));
   assert.ok(dialogSource.includes('이미지 생성용'));
   assert.ok(dialogSource.includes('영상 생성용'));
@@ -2071,4 +2144,36 @@ test('AI용 내보내기 사용법 페이지는 읽기 가능한 타이포그래
   assert.match(smokeSource, /AI용 내보내기 사용법 페이지가 열리지 않았거나 핵심 설명이 누락됐습니다/);
   assert.match(smokeSource, /사용법 페이지에서 영상 내보내기 화면으로 이동하지 못했습니다/);
   assert.match(smokeSource, /사용법에서 연 내보내기 설정을 닫았을 때 사용법 페이지로 돌아오지 못했습니다/);
+});
+
+test('조작 도움말은 접고 다시 열 수 있으며 사용자 선택을 로컬에 보존한다', () => {
+  const viewportSource = readFileSync(new URL('../src/components/Viewport.tsx', import.meta.url), 'utf8');
+  const styleSource = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+  assert.match(viewportSource, /NAVIGATION_HINT_STORAGE_KEY/);
+  assert.match(viewportSource, /조작 도움말 접기/);
+  assert.match(viewportSource, /도움말 숨기기/);
+  assert.match(viewportSource, /조작 도움말/);
+  assert.match(styleSource, /\.hint-dismiss/);
+  assert.match(styleSource, /pointer-events:\s*auto/);
+});
+
+test('조명 종류별로 실제 적용되는 범위·각도·그림자 설정만 활성화한다', () => {
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  assert.match(appSource, /LIGHT_CONTROL_CAPABILITIES/);
+  assert.match(appSource, /포인트광은 사방으로 퍼지므로 각도는 적용되지 않습니다/);
+  assert.match(appSource, /disabled=\{previewLocked \|\| !selectedLightCapabilities\.range\}/);
+  assert.match(appSource, /disabled=\{previewLocked \|\| !selectedLightCapabilities\.angle\}/);
+  assert.match(appSource, /disabled=\{previewLocked \|\| !selectedLightCapabilities\.shadow\}/);
+});
+
+test('선택 조명의 영향 범위를 시각화하고 작업용 밝기 보정은 내보내기 캡처에서 제외한다', () => {
+  const viewportSource = readFileSync(new URL('../src/components/Viewport.tsx', import.meta.url), 'utf8');
+  assert.match(viewportSource, /function SelectedLightGuide/);
+  assert.match(viewportSource, /sphereGeometry args=\{\[range/);
+  assert.match(viewportSource, /Math\.tan\(halfAngle\) \* range/);
+  assert.match(viewportSource, /VIEWPORT_ASSIST_LIGHT_STORAGE_KEY/);
+  assert.match(viewportSource, />작업 밝기<\/button>/);
+  assert.match(viewportSource, /!captureActive && viewportAssistLightEnabled/);
+  assert.match(viewportSource, /AI용 내보내기에는 반영되지 않습니다/);
+  assert.match(viewportSource, /!captureActive && renderMode === 'beauty' && selected\?\.type === 'light'/);
 });

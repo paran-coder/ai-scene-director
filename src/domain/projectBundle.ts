@@ -1,5 +1,5 @@
 import { getAssetBlob, saveAssetBlob } from './assetStorage.ts';
-import { createStoredZip, safeFilename } from './export.ts';
+import { createStoredZip, readStoredZip, safeFilename } from './export.ts';
 import { dataUrlToBlob } from './referenceImages.ts';
 import type { Project, ReferenceImage } from './types.ts';
 import { validateAndMigrateProject } from './validation.ts';
@@ -36,6 +36,8 @@ export interface ProjectBundleImportResult {
   missingReferenceImageIds: string[];
   warnings: string[];
 }
+
+export { readStoredZip };
 
 function referenceImages(project: Project): ReferenceImage[] {
   return project.scenes.flatMap((scene) => scene.referenceImages ?? []);
@@ -86,37 +88,6 @@ export async function createProjectBundle(project: Project): Promise<ProjectBund
     { name: 'project.json', data: JSON.stringify(project, null, 2) },
   );
   return { blob: await createStoredZip(files), missingAssetIds, missingReferenceImageIds, manifest };
-}
-
-export async function readStoredZip(blob: Blob): Promise<Map<string, Uint8Array>> {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const files = new Map<string, Uint8Array>();
-  let offset = 0;
-  while (offset + 4 <= bytes.length) {
-    const signature = view.getUint32(offset, true);
-    if (signature === 0x02014b50 || signature === 0x06054b50) break;
-    if (signature !== 0x04034b50) throw new Error('지원하지 않는 ZIP 구조입니다. AI Scene Director가 만든 번들을 사용해 주세요.');
-    if (offset + 30 > bytes.length) throw new Error('ZIP 로컬 헤더가 손상되었습니다.');
-    const flags = view.getUint16(offset + 6, true);
-    const method = view.getUint16(offset + 8, true);
-    const compressedSize = view.getUint32(offset + 18, true);
-    const uncompressedSize = view.getUint32(offset + 22, true);
-    const nameLength = view.getUint16(offset + 26, true);
-    const extraLength = view.getUint16(offset + 28, true);
-    if (method !== 0) throw new Error('압축된 ZIP은 아직 지원하지 않습니다. 앱에서 내보낸 프로젝트 번들을 사용해 주세요.');
-    if ((flags & 0x0008) !== 0) throw new Error('데이터 디스크립터 ZIP은 지원하지 않습니다.');
-    if (compressedSize !== uncompressedSize) throw new Error('Stored ZIP 크기 정보가 올바르지 않습니다.');
-    const nameStart = offset + 30;
-    const dataStart = nameStart + nameLength + extraLength;
-    const dataEnd = dataStart + compressedSize;
-    if (dataEnd > bytes.length) throw new Error('ZIP 파일 데이터가 손상되었습니다.');
-    const name = new TextDecoder().decode(bytes.slice(nameStart, nameStart + nameLength));
-    if (name.includes('..') || name.startsWith('/') || name.startsWith('\\')) throw new Error('안전하지 않은 ZIP 경로가 포함되어 있습니다.');
-    files.set(name, bytes.slice(dataStart, dataEnd));
-    offset = dataEnd;
-  }
-  return files;
 }
 
 function parseJsonFile<T>(files: Map<string, Uint8Array>, path: string): T {

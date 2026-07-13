@@ -31,6 +31,9 @@ interface CaptureRequest {
   reject(error: Error): void;
 }
 
+const NAVIGATION_HINT_STORAGE_KEY = 'ai-scene-director.viewport.navigationHintCollapsed';
+const VIEWPORT_ASSIST_LIGHT_STORAGE_KEY = 'ai-scene-director.viewport.assistLightEnabled';
+
 function SurfaceMaterial({ color, mode, wireframe = false, emissive = false }: { color: string; mode: CaptureRenderMode; wireframe?: boolean; emissive?: boolean }) {
   if (mode !== 'beauty') return <meshBasicMaterial color={color} wireframe={wireframe} />;
   return <meshStandardMaterial color={color} roughness={0.75} wireframe={wireframe} emissive={emissive ? color : '#000000'} emissiveIntensity={emissive ? 0.7 : 0} />;
@@ -606,6 +609,61 @@ function RelationshipGuides({ entities, relationships }: { entities: Entity[]; r
 }
 
 
+function SelectedLightGuide({ entity, targetEntity }: { entity: Entity; targetEntity?: Entity }) {
+  const settings = entity.light ?? { kind: 'ambient' as const, color: '#ffffff', intensity: 0, range: 0, angle: Math.PI / 4, castShadow: false };
+  const guideQuaternion = useMemo(() => {
+    if (settings.kind === 'spot' && targetEntity) {
+      const direction = new Vector3(...targetEntity.transform.position).sub(new Vector3(...entity.transform.position));
+      if (direction.lengthSq() > 0.0001) return new Quaternion().setFromUnitVectors(new Vector3(0, 0, -1), direction.normalize());
+    }
+    return new Quaternion().setFromEuler(new Euler(...entity.transform.rotation, 'XYZ'));
+  }, [entity.transform.position, entity.transform.rotation, settings.kind, targetEntity?.transform.position]);
+  if (settings.kind === 'ambient') return null;
+  const range = Math.max(0.25, settings.range);
+  const guideMaterial = <meshBasicMaterial color={settings.color} transparent opacity={0.22} wireframe depthTest={false} />;
+
+  if (settings.kind === 'point') {
+    return (
+      <group position={entity.transform.position} renderOrder={20}>
+        <mesh>{/* Range is the actual distance used by Three.js pointLight. */}
+          <sphereGeometry args={[range, 28, 18]} />
+          {guideMaterial}
+        </mesh>
+      </group>
+    );
+  }
+
+  const directionLength = settings.kind === 'directional' ? Math.max(4, Math.min(range, 14)) : range;
+  if (settings.kind === 'directional') {
+    return (
+      <group position={entity.transform.position} quaternion={guideQuaternion} renderOrder={20}>
+        <Line points={[[0, 0, 0], [0, 0, -directionLength]]} color={settings.color} lineWidth={1.5} depthTest={false} />
+        <mesh position={[0, 0, -directionLength]} rotation={[-Math.PI / 2, 0, 0]}>
+          <coneGeometry args={[0.18, 0.5, 12]} />
+          <meshBasicMaterial color={settings.color} transparent opacity={0.65} depthTest={false} />
+        </mesh>
+      </group>
+    );
+  }
+
+  const halfAngle = Math.max(0.05, Math.min(settings.angle, Math.PI / 2 - 0.02));
+  const radius = Math.tan(halfAngle) * range;
+  const circlePoints: Vec3[] = Array.from({ length: 33 }, (_, index) => {
+    const angle = (index / 32) * Math.PI * 2;
+    return [Math.cos(angle) * radius, Math.sin(angle) * radius, -range];
+  });
+  const edgePoints: Vec3[] = [
+    [radius, 0, -range], [-radius, 0, -range], [0, radius, -range], [0, -radius, -range],
+  ];
+  return (
+    <group position={entity.transform.position} quaternion={guideQuaternion} renderOrder={20}>
+      <Line points={circlePoints} color={settings.color} lineWidth={1.25} depthTest={false} />
+      {edgePoints.map((point, index) => <Line key={index} points={[[0, 0, 0], point]} color={settings.color} lineWidth={1.1} depthTest={false} />)}
+    </group>
+  );
+}
+
+
 function TargetedSpotLight({ entity, targetEntity }: { entity: Entity; targetEntity?: Entity }) {
   const settings = entity.light!;
   const lightRef = useRef<SpotLight>(null);
@@ -732,6 +790,14 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
   const isPlaying = useEditorStore((state) => state.isPlaying);
   const [shotCameraView, setShotCameraView] = useState(false);
   const [freeViewResetToken, setFreeViewResetToken] = useState(0);
+  const [navigationHintCollapsed, setNavigationHintCollapsed] = useState(() => {
+    try { return typeof window !== 'undefined' && window.localStorage.getItem(NAVIGATION_HINT_STORAGE_KEY) === '1'; }
+    catch { return false; }
+  });
+  const [viewportAssistLightEnabled, setViewportAssistLightEnabled] = useState(() => {
+    try { return typeof window === 'undefined' || window.localStorage.getItem(VIEWPORT_ASSIST_LIGHT_STORAGE_KEY) !== '0'; }
+    catch { return true; }
+  });
   const orbitControlsRef = useRef<OrbitControlsImpl | null>(null);
   const [captureRequest, setCaptureRequest] = useState<CaptureRequest | null>(null);
   const rendererRef = useRef<RootState | null>(null);
@@ -766,6 +832,21 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       });
     },
   }), []);
+
+  useEffect(() => {
+    try { window.localStorage.setItem(NAVIGATION_HINT_STORAGE_KEY, navigationHintCollapsed ? '1' : '0'); }
+    catch { /* private mode */ }
+  }, [navigationHintCollapsed]);
+
+  useEffect(() => {
+    try { window.localStorage.setItem(VIEWPORT_ASSIST_LIGHT_STORAGE_KEY, viewportAssistLightEnabled ? '1' : '0'); }
+    catch { /* private mode */ }
+  }, [viewportAssistLightEnabled]);
+
+  useEffect(() => {
+    if (!rendererRef.current) return;
+    rendererRef.current.gl.toneMappingExposure = !captureActive && viewportAssistLightEnabled ? 1.08 : 1;
+  }, [captureActive, viewportAssistLightEnabled]);
 
   useEffect(() => {
     if (!captureRequest || !rendererRef.current) return undefined;
@@ -806,6 +887,8 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
     if (renderMode === 'pose') return entity.type === 'character';
     return true;
   });
+  const navigationHintVisible = !captureActive && playheadTime === 0 && transformMode !== 'pose' && !shotCameraView;
+  const editingLightAssist = renderMode === 'beauty' && !captureActive && viewportAssistLightEnabled;
 
   return (
     <div className="viewport">
@@ -813,13 +896,14 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
         camera={{ position: [0, 2.4, -7], fov: 48 }}
         dpr={quality.dpr}
         gl={{ preserveDrawingBuffer: true, antialias: quality.antialias, powerPreference: quality.powerPreference }}
-        onCreated={(state) => { rendererRef.current = state; }}
+        onCreated={(state) => { rendererRef.current = state; state.gl.toneMappingExposure = viewportAssistLightEnabled ? 1.08 : 1; }}
         onPointerMissed={() => !captureActive && selectEntity(null)}
         shadows={renderMode === 'beauty' && quality.shadows}
       >
-        <color attach="background" args={[renderMode === 'beauty' ? '#0c0a09' : '#000000']} />
-        {renderMode === 'beauty' && sceneLights.length === 0 && <ambientLight intensity={1.2} />}
-        {renderMode === 'beauty' && sceneLights.length === 0 && <directionalLight position={[4, 8, 4]} intensity={2} castShadow={quality.shadows} />}
+        <color attach="background" args={[renderMode === 'beauty' ? (editingLightAssist ? '#0d1117' : '#0c0a09') : '#000000']} />
+        {editingLightAssist && <hemisphereLight args={['#dbeafe', '#2b2f36', sceneLights.length === 0 ? 0.72 : 0.38]} />}
+        {renderMode === 'beauty' && sceneLights.length === 0 && <ambientLight intensity={0.65} />}
+        {renderMode === 'beauty' && sceneLights.length === 0 && <directionalLight position={[4, 8, 4]} intensity={2.2} castShadow={quality.shadows} />}
         {renderMode === 'beauty' && sceneLights.map((entity) => <SceneLight key={`light:${entity.id}`} entity={entity} entities={entities} />)}
         {!captureActive && quality.showInfiniteGrid && <Grid infiniteGrid fadeDistance={30} sectionColor="#57534e" cellColor="#292524" />}
         <DepthOverride enabled={renderMode === 'depth'} />
@@ -835,6 +919,9 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
             relationshipControlled={Boolean(findControllingRelationship(shot.relationships, entity.id)) || playheadTime > 0 || isPlaying}
           />
         ))}
+        {!captureActive && renderMode === 'beauty' && selected?.type === 'light' && (
+          <SelectedLightGuide entity={selected} targetEntity={entities.find((entity) => entity.id === selected.light?.targetEntityId)} />
+        )}
         {!captureActive && <RelationshipGuides entities={entities} relationships={shot.relationships} />}
         {!captureActive && transformMode === 'pose' && selected?.type === 'character' && selectedJoint && !selected.locked && playheadTime === 0 && !isPlaying && (
           <SelectedCharacterJointControls entity={selected} joint={selectedJoint} />
@@ -859,11 +946,25 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
         <button className={!shotCameraView ? 'active' : ''} onClick={() => setShotCameraView(false)}>자유 시점</button>
         <button className={shotCameraView ? 'active' : ''} disabled={!activeCamera} onClick={() => setShotCameraView(true)}>샷 카메라</button>
         <button title="장면 정면(-Z)에서 피사체가 보이도록 자유 시점을 초기화합니다." onClick={() => { setShotCameraView(false); setFreeViewResetToken((value) => value + 1); }}>정면 맞춤</button>
+        <button
+          className={viewportAssistLightEnabled ? 'active' : ''}
+          title="편집 화면에서만 약한 보조광과 노출 보정을 적용합니다. AI용 내보내기에는 반영되지 않습니다."
+          aria-pressed={viewportAssistLightEnabled}
+          onClick={() => setViewportAssistLightEnabled((value) => !value)}
+        >작업 밝기</button>
         <span className="toolbar-divider" />
         <button className={transformMode === 'translate' ? 'active' : ''} onClick={() => setTransformMode('translate')}>이동</button>
         <button className={transformMode === 'rotate' ? 'active' : ''} onClick={() => setTransformMode('rotate')}>회전</button>
         <button className={transformMode === 'scale' ? 'active' : ''} onClick={() => setTransformMode('scale')}>크기</button>
         <button className={transformMode === 'pose' ? 'active' : ''} disabled={selected?.type !== 'character'} onClick={() => setTransformMode('pose')}>포즈·IK</button>
+        {navigationHintVisible && (
+          <>
+            <span className="toolbar-divider" />
+            <button className={!navigationHintCollapsed ? 'active help-toggle' : 'help-toggle'} onClick={() => setNavigationHintCollapsed((value) => !value)}>
+              {navigationHintCollapsed ? '조작 도움말' : '도움말 숨기기'}
+            </button>
+          </>
+        )}
       </div>
 
       <div className="viewport-badge">
@@ -873,17 +974,20 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
         {playheadTime > 0 ? ` · ${playheadTime.toFixed(2)}초 미리보기` : ''}
       </div>
       {captureActive ? (
-        <div className="viewport-hint">{renderMode} 제어 프레임을 캡처하고 있습니다.</div>
+        <div className="viewport-hint"><p>{renderMode} 제어 프레임을 캡처하고 있습니다.</p></div>
       ) : playheadTime > 0 ? (
-        <div className="viewport-hint">타임라인 미리보기 중에는 직접 변형이 잠깁니다. 0초로 이동해 편집하세요.</div>
+        <div className="viewport-hint"><p>타임라인 미리보기 중에는 직접 변형이 잠깁니다. 0초로 이동해 편집하세요.</p></div>
       ) : transformMode === 'pose' && legIkSide ? (
-        <div className="viewport-hint">회전 링으로 관절을 돌리거나 초록색 목표점을 끌어 {legIkSide === 'left' ? '왼발' : '오른발'} IK를 조절하세요.</div>
+        <div className="viewport-hint"><p>회전 링으로 관절을 돌리거나 초록색 목표점을 끌어 {legIkSide === 'left' ? '왼발' : '오른발'} IK를 조절하세요.</p></div>
       ) : transformMode === 'pose' && ikSide ? (
-        <div className="viewport-hint">회전 링으로 관절을 돌리거나 분홍색 목표점을 끌어 {ikSide === 'left' ? '왼손' : '오른손'} IK를 조절하세요.</div>
+        <div className="viewport-hint"><p>회전 링으로 관절을 돌리거나 분홍색 목표점을 끌어 {ikSide === 'left' ? '왼손' : '오른손'} IK를 조절하세요.</p></div>
       ) : transformMode === 'pose' && selectedJoint ? (
-        <div className="viewport-hint">선택 관절의 회전 링을 직접 드래그해 포즈를 조절하세요.</div>
-      ) : !shotCameraView ? (
-        <div className="viewport-hint navigation-hint">왼쪽 드래그: 회전 · 오른쪽 드래그: 화면 이동 · 휠: 확대/축소 · 방향이 어긋나면 ‘정면 맞춤’</div>
+        <div className="viewport-hint"><p>선택 관절의 회전 링을 직접 드래그해 포즈를 조절하세요.</p></div>
+      ) : navigationHintVisible && !navigationHintCollapsed ? (
+        <div className="viewport-hint navigation-hint">
+          <p>왼쪽 드래그: 회전 · 오른쪽 드래그: 화면 이동 · 휠: 확대/축소 · 방향이 어긋나면 ‘정면 맞춤’</p>
+          <button className="hint-dismiss" aria-label="조작 도움말 접기" onClick={() => setNavigationHintCollapsed(true)}>접기</button>
+        </div>
       ) : null}
     </div>
   );

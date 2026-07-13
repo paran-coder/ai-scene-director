@@ -1,4 +1,4 @@
-# RC13 Release Evidence
+# RC15 Release Evidence
 
 ## 공통 릴리스 실행 ID
 

@@ -1,4 +1,4 @@
-# GitHub·Vercel 업로드 안내 — RC13
+# GitHub·Vercel 업로드 안내 — RC15
 
 이 패키지는 GitHub 웹 업로드 100개 제한 안에 맞춘 소스 배포본입니다.
 
@@ -24,7 +24,7 @@ Node.js: 22.x
 
 ## 정상 반영 확인
 
-- 상단에 `schema 1.0.0-rc.13`
+- 상단에 `schema 1.0.0-rc.15`
 - `1 장면 만들기`
 - `2 장면 수정하기`
 - 노란색 `3 AI용 내보내기`
@@ -46,7 +46,11 @@ This package includes the first-edit guide layout patch. After deployment, creat
 
 ## 이번 수정
 
-- `UI_EXPORT_DIALOG_FIX.md`: 내보내기 팝업의 중복 닫기 제거와 글자 크기 개선 내용
+- 편집 전용 `작업 밝기` 토글 추가
+- 작업 밝기 보정이 AI용 내보내기 캡처에 섞이지 않도록 분리
+- 선택한 포인트광 범위와 스포트라이트 각도·방향 시각화
+- 조명 종류별 유효 설정만 활성화하고 설명 표시
+- 자유 시점 조작 도움말 접기·상태 보존
 
 ## 메인 화면 타이포그래피 수정
 
@@ -79,7 +83,7 @@ This package includes the first-edit guide layout patch. After deployment, creat
 - 버튼은 `AI용 내보내기`의 바로 오른쪽에 표시됩니다.
 - 넓은 화면에서는 `? 내보내기 사용법`, 좁은 화면에서는 `? 사용법`으로 보입니다.
 - `?` 아이콘만 보이는 이전 CSS는 제거했습니다.
-- 배포 후 헤더의 `schema 1.0.0-rc.13`와 사용법 버튼을 함께 확인하세요.
+- 배포 후 헤더의 `schema 1.0.0-rc.15`와 사용법 버튼을 함께 확인하세요.
 - 자세한 원인과 회귀 검사는 `UI_EXPORT_GUIDE_ENTRY_FIX.md`에 정리되어 있습니다.
 
 ## RC13 내보내기 전환 문구 수정
@@ -90,3 +94,19 @@ This package includes the first-edit guide layout patch. After deployment, creat
 - 영상 설정 팝업 제목은 `영상 생성용 자료 만들기`로 표시됩니다.
 - 팝업 상단에 `영상 생성 사이트로 이동하지 않습니다` 안내가 표시됩니다.
 - 사용법 페이지에서 연 설정을 닫으면 편집기가 아니라 사용법 페이지로 돌아갑니다.
+
+## RC14 내보내기 무결성 수정
+
+- 이미지 ZIP의 `shot_manifest.json`은 `frames/reference.png`, `controls/pose.png`, `controls/depth.png`, `controls/entity_mask.png`를 참조합니다.
+- 영상 ZIP의 매니페스트는 시작·종료 프레임과 시작·종료 제어 이미지를 참조합니다.
+- 두 모드 모두 `prompts/final_prompt.txt`를 매니페스트에 포함합니다.
+- ZIP을 생성한 뒤 앱이 다시 열어 파일 수, CRC, PNG 헤더와 텍스트를 검증한 후 다운로드합니다.
+
+
+## RC15 뷰포트·조명 점검
+
+- 뷰포트 상단의 `작업 밝기`를 끄고 켰을 때 편집 화면만 달라지는지 확인합니다.
+- AI용 내보내기 캡처에는 작업 밝기 보조광이 포함되지 않습니다.
+- 포인트광 선택 시 범위 구체, 스포트라이트 선택 시 조사 콘이 나타나는지 확인합니다.
+- 필 라이트처럼 포인트광인 경우 각도 입력이 비활성화되고 범위만 조절되는지 확인합니다.
+- 왼쪽 아래 조작 도움말을 접은 뒤 새로고침해도 접힌 상태가 유지되는지 확인합니다.

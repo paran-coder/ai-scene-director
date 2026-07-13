@@ -2,6 +2,7 @@ import { collectActionConflicts } from './actions.ts';
 import { createEnvironmentState, resolveEnvironmentPreset } from './environmentPresets.ts';
 import { createNeutralPose } from './pose.ts';
 import {
+  CURRENT_SCHEMA_VERSION,
   JOINT_NAMES,
   type ActionBlock,
   type AssetLibraryItem,
@@ -16,7 +17,7 @@ import {
   type Vec3,
 } from './types.ts';
 
-export const CURRENT_SCHEMA_VERSION = '1.0.0-rc.13';
+export { CURRENT_SCHEMA_VERSION };
 
 export interface ProjectValidationResult {
   success: boolean;

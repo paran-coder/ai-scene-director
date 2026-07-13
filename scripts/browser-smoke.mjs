@@ -243,6 +243,49 @@ try {
   if (state.runtime === 'unsupported' && !state.safeMode) throw Object.assign(new Error('WebGL 미지원 환경에서 3D 안전 모드가 활성화되지 않았습니다.'), { appFailure: true, pageState: state });
   await cdp.send('Runtime.evaluate', { expression: `document.querySelector('.onboarding-actions button')?.click()` });
   await new Promise((resolve) => setTimeout(resolve, 180));
+
+  const viewportControlsResult = await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const safeMode = Boolean(document.querySelector('[data-testid="viewport-safe-mode"]'));
+      if (safeMode) return { safeMode: true };
+      const buttons = Array.from(document.querySelectorAll('.viewport-toolbar button'));
+      const brightness = buttons.find((button) => button.textContent?.trim() === '작업 밝기');
+      const hintDismiss = document.querySelector('.navigation-hint .hint-dismiss');
+      return {
+        safeMode: false,
+        brightnessExists: Boolean(brightness),
+        brightnessPressed: brightness?.getAttribute('aria-pressed'),
+        hintDismissExists: Boolean(hintDismiss),
+      };
+    })()`,
+    returnByValue: true,
+  });
+  const viewportControls = viewportControlsResult?.result?.value;
+  if (!viewportControls?.safeMode) {
+    if (!viewportControls?.brightnessExists || viewportControls.brightnessPressed !== 'true' || !viewportControls.hintDismissExists) {
+      throw Object.assign(new Error('뷰포트 작업 밝기 또는 접을 수 있는 조작 도움말이 표시되지 않았습니다.'), { appFailure: true, pageState: state, viewportControls });
+    }
+    await cdp.send('Runtime.evaluate', { expression: `Array.from(document.querySelectorAll('.viewport-toolbar button')).find((button) => button.textContent?.trim() === '작업 밝기')?.click()` });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const brightnessOffResult = await cdp.send('Runtime.evaluate', {
+      expression: `Array.from(document.querySelectorAll('.viewport-toolbar button')).find((button) => button.textContent?.trim() === '작업 밝기')?.getAttribute('aria-pressed')`,
+      returnByValue: true,
+    });
+    if (brightnessOffResult?.result?.value !== 'false') throw Object.assign(new Error('작업 밝기 토글이 꺼지지 않았습니다.'), { appFailure: true, pageState: state });
+    await cdp.send('Runtime.evaluate', { expression: `Array.from(document.querySelectorAll('.viewport-toolbar button')).find((button) => button.textContent?.trim() === '작업 밝기')?.click(); document.querySelector('.navigation-hint .hint-dismiss')?.click()` });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const collapsedHintResult = await cdp.send('Runtime.evaluate', {
+      expression: `(() => ({ hidden: !document.querySelector('.navigation-hint'), reopen: Array.from(document.querySelectorAll('.viewport-toolbar button')).some((button) => button.textContent?.trim() === '조작 도움말') }))()`,
+      returnByValue: true,
+    });
+    const collapsedHint = collapsedHintResult?.result?.value;
+    if (!collapsedHint?.hidden || !collapsedHint?.reopen) throw Object.assign(new Error('조작 도움말 접기 또는 다시 열기 버튼이 동작하지 않았습니다.'), { appFailure: true, pageState: state, collapsedHint });
+    await cdp.send('Runtime.evaluate', { expression: `Array.from(document.querySelectorAll('.viewport-toolbar button')).find((button) => button.textContent?.trim() === '조작 도움말')?.click()` });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const reopenedHintResult = await cdp.send('Runtime.evaluate', { expression: `Boolean(document.querySelector('.navigation-hint'))`, returnByValue: true });
+    if (!reopenedHintResult?.result?.value) throw Object.assign(new Error('접은 조작 도움말을 다시 열지 못했습니다.'), { appFailure: true, pageState: state });
+  }
+
   await cdp.send('Runtime.evaluate', {
     expression: `document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', code: 'KeyK', ctrlKey: true, bubbles: true, cancelable: true }))`,
   });

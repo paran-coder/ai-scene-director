@@ -19,6 +19,9 @@ npm run verify:rc
 - 복구 저널과 반복 편집 스트레스
 - Chromium 앱 셸과 WebGL 미지원 안전 모드
 - Ctrl/Cmd+K 명령 검색 상호작용
+- 이미지·영상 AI ZIP의 모드별 파일 목록과 Manifest 참조 일치
+- Stored ZIP 중앙 디렉터리·CRC·안전 경로 검증
+- 내보낸 PNG 헤더와 UTF-8 텍스트 유효성 검증
 
 ## 플랫폼별 필수 증거
 

@@ -34,7 +34,7 @@ export function shouldShowOnboarding(): boolean {
   try { return localStorage.getItem(STORAGE_KEY) !== 'done'; } catch { return true; }
 }
 
-export function Onboarding({ open, onClose, onOpenSceneGenerator }: { open: boolean; onClose(): void; onOpenSceneGenerator(): void }) {
+export function Onboarding({ open, onClose, onOpenSceneGenerator, onOpenExportGuide }: { open: boolean; onClose(): void; onOpenSceneGenerator(): void; onOpenExportGuide(): void }) {
   const [step, setStep] = useState(0);
   if (!open) return null;
   const finish = () => {
@@ -55,6 +55,7 @@ export function Onboarding({ open, onClose, onOpenSceneGenerator }: { open: bool
         <ul className="onboarding-checklist">
           {current.checklist.map((item) => <li key={item}>{item}</li>)}
         </ul>
+        {step === 3 && <button className="onboarding-export-guide" onClick={onOpenExportGuide}>내보낸 자료 사용법 자세히 보기</button>}
         <div className="onboarding-actions">
           <button onClick={finish}>닫기</button>
           {step > 0 && <button onClick={() => setStep((value) => value - 1)}>이전</button>}

@@ -35,6 +35,8 @@ export function AIExportDialog({
   onCopyPrompt,
   onDownloadReference,
   onDownloadStartEnd,
+  onOpenGuide,
+  initialMode = 'image',
 }: {
   open: boolean;
   shotName: string;
@@ -49,9 +51,11 @@ export function AIExportDialog({
   onCopyPrompt(mode: 'image' | 'video'): void;
   onDownloadReference(): void;
   onDownloadStartEnd(): void;
+  onOpenGuide(): void;
+  initialMode?: AIExportMode;
 }) {
-  const [mode, setMode] = useState<AIExportMode>('image');
-  useEffect(() => { if (open) setMode('image'); }, [open]);
+  const [mode, setMode] = useState<AIExportMode>(initialMode);
+  useEffect(() => { if (open) setMode(initialMode); }, [open, initialMode]);
   if (!open) return null;
 
   const previewPrompt = mode === 'video'
@@ -68,7 +72,10 @@ export function AIExportDialog({
             <strong>AI용 내보내기</strong>
             <small>{shotName}의 장면 정보를 생성 AI가 이해하기 쉬운 자료로 변환합니다.</small>
           </div>
-          <button className="ai-export-close" onClick={onClose} aria-label="AI용 내보내기 닫기" title="닫기">×</button>
+          <div className="ai-export-header-actions">
+            <button className="ai-export-guide-link" onClick={onOpenGuide}>내보낸 자료 사용법</button>
+            <button className="ai-export-close" onClick={onClose} aria-label="AI용 내보내기 닫기" title="닫기">×</button>
+          </div>
         </header>
 
         <div className="ai-export-content">

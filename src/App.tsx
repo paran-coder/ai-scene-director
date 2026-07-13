@@ -32,6 +32,7 @@ const ComfyPanel = lazy(async () => ({ default: (await import('./components/Comf
 const SceneGeneratorPanel = lazy(async () => ({ default: (await import('./components/SceneGeneratorPanel')).SceneGeneratorPanel }));
 const AssetLibraryPanel = lazy(async () => ({ default: (await import('./components/AssetLibraryPanel')).AssetLibraryPanel }));
 const ProjectDoctorPanel = lazy(async () => ({ default: (await import('./components/ProjectDoctorPanel')).ProjectDoctorPanel }));
+const AIExportGuidePage = lazy(async () => ({ default: (await import('./components/AIExportGuidePage')).AIExportGuidePage }));
 
 function ReferenceImagePreview({ image, alt, className }: { image: ReferenceImage; alt: string; className?: string }) {
   const [src, setSrc] = useState<string | null>(image.dataUrl ?? null);
@@ -279,6 +280,8 @@ export default function App() {
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [aiExportOpen, setAIExportOpen] = useState(false);
+  const [aiExportGuideOpen, setAIExportGuideOpen] = useState(false);
+  const [aiExportInitialMode, setAIExportInitialMode] = useState<AIExportMode>('image');
   const [comfyOpen, setComfyOpen] = useState(false);
   const [sceneGeneratorOpen, setSceneGeneratorOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -965,6 +968,7 @@ export default function App() {
   };
 
   const requestAIExport = () => {
+    setAIExportInitialMode('image');
     setAIExportOpen(true);
     recordCreatorEvent('workflow_navigated', { action: 'export-review', readiness: exportPreflight.status });
   };
@@ -1149,6 +1153,17 @@ export default function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [commandPaletteOpen, sessionInsightsOpen, sceneGeneratorOpen, doctorOpen]);
+
+  const openAIExportGuide = () => {
+    setAIExportOpen(false);
+    setAIExportGuideOpen(true);
+  };
+
+  const openAIExportFromGuide = (mode: AIExportMode) => {
+    setAIExportGuideOpen(false);
+    setAIExportInitialMode(mode);
+    setAIExportOpen(true);
+  };
 
   const selectedPose = selected?.character?.pose;
   const selectedJointRotation = selectedPose && selectedJoint ? selectedPose[selectedJoint] : null;
@@ -1655,7 +1670,17 @@ export default function App() {
         onCopyPrompt={(mode) => void copyAIExportPrompt(mode)}
         onDownloadReference={() => void downloadAIReferenceFrame()}
         onDownloadStartEnd={() => void downloadAIStartEndFrames()}
+        onOpenGuide={openAIExportGuide}
+        initialMode={aiExportInitialMode}
       />
+      <Suspense fallback={null}><AIExportGuidePage
+        open={aiExportGuideOpen}
+        canRender={exportPreflight.canExport}
+        onClose={() => setAIExportGuideOpen(false)}
+        onOpenExport={openAIExportFromGuide}
+        onCopyPrompt={() => void copyAIExportPrompt('image')}
+        onDownloadReference={() => void downloadAIReferenceFrame()}
+      /></Suspense>
 
       {exportStatus && <div className="export-status">{exportStatus}</div>}
       {cleanupStatus && <button className="export-status cleanup-status" onClick={() => setCleanupStatus(null)}>{cleanupStatus}</button>}
@@ -1668,7 +1693,7 @@ export default function App() {
         onApplyProject={importProject}
         onClose={() => setDoctorOpen(false)}
       /></Suspense>
-      <Onboarding open={onboardingOpen} onClose={() => setOnboardingOpen(false)} onOpenSceneGenerator={() => setSceneGeneratorOpen(true)} />
+      <Onboarding open={onboardingOpen} onClose={() => setOnboardingOpen(false)} onOpenSceneGenerator={() => setSceneGeneratorOpen(true)} onOpenExportGuide={() => { setOnboardingOpen(false); setAIExportGuideOpen(true); }} />
 
       {message && (
         <button className="toast" onClick={clearMessage} aria-label="알림 닫기">

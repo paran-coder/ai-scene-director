@@ -2008,3 +2008,33 @@ test('메인 편집 화면은 패널·객체·샷·타임라인에 읽기 가능
   assert.match(styleSource, /\.timeline-empty \{ font-size:\s*13px/);
   assert.match(styleSource, /\.command-bar input, \.command-bar select, \.command-bar button \{ font-size:\s*13px/);
 });
+
+test('AI용 내보내기 사용법은 별도 전체 페이지에서 초보·영상·ComfyUI 흐름을 설명한다', () => {
+  const guideSource = readFileSync(new URL('../src/components/AIExportGuidePage.tsx', import.meta.url), 'utf8');
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const dialogSource = readFileSync(new URL('../src/components/AIExportDialog.tsx', import.meta.url), 'utf8');
+  assert.match(guideSource, /내보낸 자료를 생성 AI에 적용하는 방법/);
+  assert.match(guideSource, /기준 이미지와 최종 프롬프트만 사용해도 됩니다/);
+  assert.match(guideSource, /reference\.png/);
+  assert.match(guideSource, /start_frame\.png/);
+  assert.match(guideSource, /Pose ControlNet/);
+  assert.match(guideSource, /shot_manifest\.json/);
+  assert.match(guideSource, /이미지 생성용 내보내기/);
+  assert.match(guideSource, /영상 생성용 내보내기/);
+  assert.match(dialogSource, /내보낸 자료 사용법/);
+  assert.match(appSource, /<AIExportGuidePage/);
+  assert.match(appSource, /onOpenExport=\{openAIExportFromGuide\}/);
+});
+
+test('AI용 내보내기 사용법 페이지는 읽기 가능한 타이포그래피와 브라우저 상호작용 검사를 가진다', () => {
+  const styleSource = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const smokeSource = readFileSync(new URL('../scripts/browser-smoke.mjs', import.meta.url), 'utf8');
+  assert.match(styleSource, /\.ai-export-guide-page\s*\{[^}]*position:\s*fixed;/s);
+  assert.match(styleSource, /\.ai-export-guide-hero p\s*\{[^}]*font-size:\s*15px/s);
+  assert.match(styleSource, /\.guide-file-row > \*\s*\{[^}]*font-size:\s*13px/s);
+  assert.match(styleSource, /\.guide-final-cta h2\s*\{[^}]*font-size:\s*22px/s);
+  assert.match(smokeSource, /ai-export-guide-title/);
+  assert.match(smokeSource, /기준 이미지와 최종 프롬프트/);
+  assert.match(smokeSource, /AI용 내보내기 사용법 페이지가 열리지 않았거나 핵심 설명이 누락됐습니다/);
+  assert.match(smokeSource, /사용법 페이지에서 영상 내보내기 화면으로 이동하지 못했습니다/);
+});

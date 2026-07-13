@@ -6,14 +6,23 @@ import { tmpdir } from 'node:os';
 import { releaseIdentity } from './release-identity.mjs';
 
 const strict = process.argv.includes('--strict');
+const profileArgument = process.argv.find((argument) => argument.startsWith('--profile='))?.slice('--profile='.length);
 const reportArgument = process.argv.find((argument) => argument.startsWith('--report='))?.slice('--report='.length);
+const screenshotArgument = process.argv.find((argument) => argument.startsWith('--screenshot='))?.slice('--screenshot='.length);
 const platformArgument = process.argv.find((argument) => argument.startsWith('--platform='))?.slice('--platform='.length);
+const widthArgument = Number(process.argv.find((argument) => argument.startsWith('--width='))?.slice('--width='.length));
+const heightArgument = Number(process.argv.find((argument) => argument.startsWith('--height='))?.slice('--height='.length));
+const notebookProfile = profileArgument === 'notebook';
+const viewportWidth = Number.isFinite(widthArgument) && widthArgument > 0 ? widthArgument : notebookProfile ? 1366 : 1440;
+const viewportHeight = Number.isFinite(heightArgument) && heightArgument > 0 ? heightArgument : notebookProfile ? 768 : 920;
 const platform = platformArgument || process.platform;
 const identity = await releaseIdentity(platform);
 const root = new URL('../', import.meta.url);
 const distPath = new URL('../dist/', import.meta.url);
-const reportPath = reportArgument ? resolve(process.cwd(), reportArgument) : new URL('../BROWSER_SMOKE.json', import.meta.url);
-const screenshotPath = new URL('../dist/browser-smoke.png', import.meta.url);
+const defaultReportName = notebookProfile ? 'BROWSER_SMOKE_NOTEBOOK.json' : 'BROWSER_SMOKE.json';
+const defaultScreenshotName = notebookProfile ? 'browser-smoke-notebook.png' : 'browser-smoke.png';
+const reportPath = reportArgument ? resolve(process.cwd(), reportArgument) : new URL(`../${defaultReportName}`, import.meta.url);
+const screenshotPath = screenshotArgument ? resolve(process.cwd(), screenshotArgument) : new URL(`../dist/${defaultScreenshotName}`, import.meta.url);
 const timeoutMs = 18_000;
 const startedAt = new Date();
 
@@ -112,7 +121,9 @@ async function installInjectedApp(cdp) {
         setItem(key, value) { values.set(String(key), String(value)); },
       };
     };
-    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: createStorage() });
+    const local = createStorage();
+    local.setItem('ai-scene-director-onboarding-front-view-v1', 'done');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: local });
     Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: createStorage() });
     globalThis.__AISD_SMOKE_INJECTED__ = true;
   })()`;
@@ -189,7 +200,7 @@ try {
   const args = [
     '--headless=new', '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-software-rasterizer', '--allow-file-access-from-files', '--disable-web-security',
     '--disable-background-networking', '--disable-default-apps', '--disable-extensions', '--disable-sync', '--metrics-recording-only',
-    '--no-first-run', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${userDataDir}`, '--window-size=1440,920', smokeUrl,
+    '--no-first-run', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${userDataDir}`, `--window-size=${viewportWidth},${viewportHeight}`, smokeUrl,
   ];
   browser = spawn(browserPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   browser.stderr.on('data', (chunk) => { stderr += String(chunk); });
@@ -241,20 +252,60 @@ try {
   });
   const interaction = interactionResult?.result?.value;
   if (!interaction?.commandPaletteOpen || interaction.commandCount < 1) throw Object.assign(new Error('Ctrl/Cmd+K 명령 검색 상호작용이 브라우저에서 동작하지 않았습니다.'), { appFailure: true, pageState: state });
-  await cdp.send('Runtime.evaluate', { expression: `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }))` });
+  await cdp.send('Runtime.evaluate', { expression: `document.querySelector('.command-palette-search button')?.click()` });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  await cdp.send('Runtime.evaluate', { expression: `document.querySelector('.primary-export')?.click()` });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  const exportReviewResult = await cdp.send('Runtime.evaluate', {
+    expression: `(() => { const dialog = document.querySelector('[role="dialog"][aria-label="샷 패키지 출력 확인"]'); const text = dialog?.innerText ?? ''; return { open: Boolean(dialog), hasFilePlan: text.includes('생성되는 파일'), blocked: text.includes('출력 전 수정 필요'), confirmVisible: text.includes('Shot Package 생성') }; })()`,
+    returnByValue: true,
+  });
+  const exportReview = exportReviewResult?.result?.value;
+  if (!exportReview?.open || !exportReview.hasFilePlan) throw Object.assign(new Error('Shot Package 출력 사전점검 대화상자가 열리지 않았습니다.'), { appFailure: true, pageState: state });
+  await cdp.send('Runtime.evaluate', { expression: `document.querySelector('[role="dialog"][aria-label="샷 패키지 출력 확인"] .modal-header button')?.click()` });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const layoutResult = await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const rect = (selector) => { const node = document.querySelector(selector); if (!node) return null; const value = node.getBoundingClientRect(); return { top: value.top, left: value.left, right: value.right, bottom: value.bottom, width: value.width, height: value.height }; };
+      const header = document.querySelector('.app-header');
+      const visible = (value) => Boolean(value && value.bottom > 0 && value.top < window.innerHeight && value.right > 0 && value.left < window.innerWidth);
+      const areas = { header: rect('.app-header'), workspace: rect('.workspace'), shots: rect('.shot-strip'), timeline: rect('.timeline-panel'), command: rect('.command-bar') };
+      return {
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
+        horizontalOverflow: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
+        verticalOverflow: Math.max(0, document.documentElement.scrollHeight - window.innerHeight),
+        headerOverflow: header ? Math.max(0, header.scrollWidth - header.clientWidth) : null,
+        areas,
+        visible: { workspace: visible(areas.workspace), shots: visible(areas.shots), timeline: visible(areas.timeline), command: visible(areas.command) },
+      };
+    })()`,
+    returnByValue: true,
+  });
+  const layout = layoutResult?.result?.value;
+  if (!layout?.visible?.workspace || !layout?.visible?.shots || !layout?.visible?.timeline || !layout?.visible?.command) {
+    throw Object.assign(new Error('핵심 편집 영역이 현재 화면 높이 안에 모두 표시되지 않았습니다.'), { appFailure: true, pageState: state, layout });
+  }
+  if ((layout.horizontalOverflow ?? 0) > 4 || (layout.headerOverflow ?? 0) > 4) {
+    throw Object.assign(new Error(`편집 화면에 수평 잘림이 있습니다. 문서 ${layout.horizontalOverflow}px · 헤더 ${layout.headerOverflow}px`), { appFailure: true, pageState: state, layout });
+  }
+  if (notebookProfile && (layout.areas?.workspace?.height ?? 0) < 220) {
+    throw Object.assign(new Error('노트북 화면에서 3D 작업 영역 높이가 220px보다 작습니다.'), { appFailure: true, pageState: state, layout });
+  }
   const image = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   if (image?.data) await writeFile(screenshotPath, Buffer.from(image.data, 'base64'));
   cdp.close();
   report = {
     ...identity, generatedAt: new Date().toISOString(), status: 'pass', strict, platform: identity.platform, browserPath, url: smokeUrl, executionMode,
     injectedBundle, runtimeStatus: state.runtime ?? (state.safeMode ? 'unsupported' : null), safeMode: state.safeMode, title: state.title, interaction,
-    screenshot: 'dist/browser-smoke.png', durationMs: Date.now() - startedAt.getTime(),
+    profile: notebookProfile ? 'notebook' : 'default', viewport: { width: viewportWidth, height: viewportHeight }, layout, exportReview,
+    screenshot: `dist/${defaultScreenshotName}`, durationMs: Date.now() - startedAt.getTime(),
   };
 } catch (error) {
   const blocked = Boolean(error?.blocked) || (!error?.appFailure && classifyBlocked(stderr));
   report = {
     ...identity, generatedAt: new Date().toISOString(), status: blocked ? 'blocked' : 'fail', strict, platform: identity.platform,
-    reason: error instanceof Error ? error.message : String(error), pageState: error?.pageState ?? null, durationMs: Date.now() - startedAt.getTime(),
+    reason: error instanceof Error ? error.message : String(error), pageState: error?.pageState ?? null, layout: error?.layout ?? null, durationMs: Date.now() - startedAt.getTime(),
     logTail: stderr.split(/\r?\n/).slice(-30).join('\n'),
   };
 } finally {

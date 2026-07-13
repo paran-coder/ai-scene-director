@@ -1,8 +1,8 @@
-# AI Scene Director 1.0 RC9 상태
+# AI Scene Director 1.0 RC10 상태
 
 ## 자동 검증
 
-- 자동 테스트: 132/132 통과
+- 자동 테스트: 140/140 통과
 - TypeScript·Vite 프로덕션 빌드: 통과
 - Tauri 정적 구성 검사: 통과
 - Chromium React 앱 셸·명령 검색: 통과
@@ -10,15 +10,16 @@
 - GLB 리그 Fixture: Mixamo·VRM·Generic 통과
 - 반복 편집·복구 스트레스: 통과
 
-## RC9 핵심 보강
+## RC10 핵심 보강
 
-- 플랫폼 보고서에 앱 버전과 공통 `releaseId` 추가
-- 다른 CI 실행의 보고서 혼합 차단
-- 설치 산출물 SHA-256과 실행 바이너리 SHA-256 검증
-- Tauri 앱 내부 버전과 릴리스 버전 교차 검사
-- WebView·React 준비 완료·정상 종료 코드 필수화
-- 9개 증거 파일의 `RELEASE_EVIDENCE_MANIFEST.json` 생성
-- `ready` 게이트에서만 동작하는 `release:promote` 도구 추가
+- Shot Package 출력 전 준비 상태·생성 파일·주의 사항 확인
+- 카메라 누락과 3D 렌더 불가 시 출력 차단
+- 행동 충돌은 타임라인 수정으로 바로 안내
+- 1366×768 Chromium 레이아웃 스모크 추가
+- 헤더·문서 수평 넘침과 핵심 영역 가시성 검사
+- 낮은 화면에서 명령창이 화면 밖으로 밀리는 그리드 오류 수정
+- 기본·노트북 브라우저 검증을 RC 통합 검사에 포함
+
 
 ## 현재 릴리스 게이트
 

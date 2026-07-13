@@ -54,7 +54,7 @@ export function Onboarding({ open, onClose, onOpenSceneGenerator }: { open: bool
         <div className="onboarding-progress" aria-label={`${step + 1}/${STEPS.length}`}>
           {STEPS.map((_, index) => <i key={index} className={index <= step ? 'active' : ''} />)}
         </div>
-        <span className="eyebrow">AI Scene Director 1.0 RC9 · 빠른 사용법 · {step + 1}/{STEPS.length}</span>
+        <span className="eyebrow">AI Scene Director 1.0 RC10 · 빠른 사용법 · {step + 1}/{STEPS.length}</span>
         <h2 id="onboarding-title">{current.title}</h2>
         <p>{current.body}</p>
         <ul className="onboarding-checklist">

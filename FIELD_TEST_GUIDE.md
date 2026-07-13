@@ -1,4 +1,4 @@
-# AI Scene Director RC9 현장 사용성·설치 점검
+# AI Scene Director RC10 현장 사용성·설치 점검
 
 ## 목적
 

@@ -1,7 +1,7 @@
 {
   "name": "ai-scene-director-mvp",
   "private": true,
-  "version": "1.0.0-rc.9",
+  "version": "1.0.0-rc.10",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,7 @@
     "desktop:build": "npx @tauri-apps/cli@latest build",
     "desktop:check": "node scripts/check-desktop.mjs",
     "verify:beta": "npm run verify:rc",
-    "verify:rc": "npm test && npm run desktop:check && npm run build && npm run release:check && npm run browser:smoke && npm run release:gate",
+    "verify:rc": "npm test && npm run desktop:check && npm run build && npm run release:check && npm run browser:smoke && npm run browser:smoke:notebook && npm run release:gate",
     "release:check": "node scripts/release-preflight.mjs",
     "fixtures:generate": "node scripts/generate-rig-fixtures.mjs",
     "browser:smoke": "node scripts/browser-smoke.mjs",
@@ -22,7 +22,8 @@
     "release:gate:strict": "node --experimental-strip-types scripts/release-gate.mjs --strict",
     "native:smoke": "node scripts/native-runtime-smoke.mjs",
     "release:promotion:check": "node scripts/promote-release.mjs",
-    "release:promote": "node scripts/promote-release.mjs --apply"
+    "release:promote": "node scripts/promote-release.mjs --apply",
+    "browser:smoke:notebook": "node scripts/browser-smoke.mjs --profile=notebook --strict"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.6",

@@ -4,9 +4,11 @@ import { Onboarding, shouldShowOnboarding } from './components/Onboarding';
 import { DirectorWorkflowPanel } from './components/DirectorWorkflowPanel';
 import { CommandPalette } from './components/CommandPalette';
 import { SessionInsightsPanel } from './components/SessionInsightsPanel';
+import { ShotExportReview } from './components/ShotExportReview';
 import type { PreparedComfyInputs } from './components/ComfyPanel';
 import { ACTION_LABELS, collectActionConflicts } from './domain/actions';
 import { analyzeDirectorWorkflow, type DirectorActionId } from './domain/directorWorkflow';
+import { buildShotExportPreflight } from './domain/shotExportPreflight';
 import { buildCommandCatalog, type AppCommandId } from './domain/commandPalette';
 import { appendCreatorSessionEvent, createCreatorSession, saveCreatorSession, type CreatorSessionEventType } from './domain/sessionInsights';
 import { buildCameraPrompt, buildMotionPrompt, buildShotPackageManifest, buildShotPrompt, createStoredZip, DEFAULT_NEGATIVE_PROMPT, downloadBlob, safeFilename } from './domain/export';
@@ -276,6 +278,7 @@ export default function App() {
   const timelineRef = useRef<HTMLElement>(null);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [exportReviewOpen, setExportReviewOpen] = useState(false);
   const [comfyOpen, setComfyOpen] = useState(false);
   const [sceneGeneratorOpen, setSceneGeneratorOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -338,6 +341,7 @@ export default function App() {
   const baseSelected = scene.entities.find((item) => item.id === selectedEntityId) ?? null;
   const resolvedEntities = useMemo(() => resolveSceneAtTime(scene, shot, playheadTime), [scene, shot, playheadTime]);
   const selected = resolvedEntities.find((item) => item.id === selectedEntityId) ?? null;
+  const exportPreflight = useMemo(() => buildShotExportPreflight(scene, shot, { renderAvailable: runtimeDiagnostics?.status !== 'unsupported' }), [scene, shot, runtimeDiagnostics?.status]);
   const controlledRelationship = selected ? findControllingRelationship(shot.relationships, selected.id) : undefined;
   const [command, setCommand] = useState('');
   const [entityType, setEntityType] = useState<EntityType>('character');
@@ -827,8 +831,9 @@ export default function App() {
     };
   };
 
-  const exportShotPackage = async () => {
+  const performShotPackageExport = async () => {
     if (!viewportRef.current || isExporting) return;
+    setExportReviewOpen(false);
     setIsExporting(true);
     recordCreatorEvent('export_started', { kind: 'shot-package', shotCount: scene.shots.length });
     setExportStatus('시작 프레임 렌더링');
@@ -875,6 +880,11 @@ export default function App() {
       setIsExporting(false);
       setTimeout(() => setExportStatus(null), 3500);
     }
+  };
+
+  const requestShotPackageExport = () => {
+    setExportReviewOpen(true);
+    recordCreatorEvent('workflow_navigated', { action: 'export-review', readiness: exportPreflight.status });
   };
 
   const focusArea = (area: 'hierarchy' | 'inspector' | 'shots' | 'timeline', element: HTMLElement | null) => {
@@ -936,7 +946,14 @@ export default function App() {
       return;
     }
     if (action === 'openProjectDoctor') { setDoctorOpen(true); return; }
-    if (action === 'exportShotPackage') { void exportShotPackage(); }
+    if (action === 'exportShotPackage') { requestShotPackageExport(); }
+  };
+
+  const handleExportQuickFix = () => {
+    setExportReviewOpen(false);
+    if (exportPreflight.quickAction === 'selectCamera') handleDirectorAction('selectShotCamera');
+    else if (exportPreflight.quickAction === 'focusTimeline') handleDirectorAction('focusTimeline');
+    else handleDirectorAction('openProjectDoctor');
   };
 
   const applyGeneratedScene = (prompt: string) => {
@@ -983,7 +1000,7 @@ export default function App() {
     if (id === 'focusShotStrip') { handleDirectorAction('focusShotStrip'); return; }
     if (id === 'focusTimeline') { handleDirectorAction('focusTimeline'); return; }
     if (id === 'openProjectDoctor') { setDoctorOpen(true); recordCreatorEvent('project_checked', { source }); return; }
-    if (id === 'exportShotPackage') { void exportShotPackage(); return; }
+    if (id === 'exportShotPackage') { requestShotPackageExport(); return; }
     if (id === 'toggleFocusMode') { setFocusMode((value) => !value); return; }
     if (id === 'toggleWorkflow') { setWorkflowCollapsed((value) => !value); return; }
     if (id === 'undo') { if (undoCount) undo(); return; }
@@ -1078,7 +1095,7 @@ export default function App() {
           </div>
           <button className="command-search-button focus-essential" onClick={openCommandPalette}><span>명령 검색</span><kbd>⌘K</kbd></button>
           <button className="scene-generator-button focus-essential" onClick={() => executeCommand('openSceneGenerator')}>AI 씬 생성</button>
-          <button className="primary-export focus-essential" disabled={isExporting} onClick={exportShotPackage}>{isExporting ? '생성 중…' : '샷 패키지'}</button>
+          <button className="primary-export focus-essential" disabled={isExporting} onClick={requestShotPackageExport}>{isExporting ? '생성 중…' : '샷 패키지'}</button>
           <button className="usage-button focus-essential" title="처음부터 따라 하는 6단계 사용법" onClick={() => setOnboardingOpen(true)}>사용법</button>
           <details className="header-menu tools-menu">
             <summary>도구</summary>
@@ -1110,12 +1127,6 @@ export default function App() {
           </details>
         </nav>
       </header>
-
-      {runtimeDiagnostics?.status === 'unsupported' && (
-        <button className="runtime-warning" onClick={() => setDoctorOpen(true)}>
-          현재 실행 환경에서 3D 편집 또는 로컬 에셋 저장이 제한됩니다. 프로젝트 점검에서 상세 내용을 확인하세요.
-        </button>
-      )}
 
       <section className="workspace">
         <DirectorWorkflowPanel report={directorReport} activeShotName={shot.name} collapsed={workflowCollapsed || focusMode} focusMode={focusMode} onAction={handleDirectorAction} onToggleCollapsed={() => setWorkflowCollapsed((value) => !value)} onToggleFocus={() => setFocusMode((value) => !value)} />
@@ -1544,6 +1555,15 @@ export default function App() {
 
       <CommandPalette open={commandPaletteOpen} commands={commandCatalog} onClose={() => setCommandPaletteOpen(false)} onExecute={(id) => executeCommand(id, 'palette')} />
       <SessionInsightsPanel open={sessionInsightsOpen} session={creatorSession} onClose={() => setSessionInsightsOpen(false)} onClear={() => { const next = appendCreatorSessionEvent(createCreatorSession(), 'session_started', { appVersion: project.schemaVersion }); setCreatorSession(next); saveCreatorSession(next); }} />
+      <ShotExportReview
+        open={exportReviewOpen}
+        shotName={shot.name}
+        preflight={exportPreflight}
+        isExporting={isExporting}
+        onClose={() => setExportReviewOpen(false)}
+        onConfirm={() => void performShotPackageExport()}
+        onQuickFix={handleExportQuickFix}
+      />
 
       {exportStatus && <div className="export-status">{exportStatus}</div>}
       {cleanupStatus && <button className="export-status cleanup-status" onClick={() => setCleanupStatus(null)}>{cleanupStatus}</button>}

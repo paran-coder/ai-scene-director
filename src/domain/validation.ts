@@ -16,7 +16,7 @@ import {
   type Vec3,
 } from './types.ts';
 
-export const CURRENT_SCHEMA_VERSION = '1.0.0-rc.9';
+export const CURRENT_SCHEMA_VERSION = '1.0.0-rc.10';
 
 export interface ProjectValidationResult {
   success: boolean;

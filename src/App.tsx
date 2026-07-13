@@ -4,7 +4,7 @@ import { Onboarding, shouldShowOnboarding } from './components/Onboarding';
 import { DirectorWorkflowPanel } from './components/DirectorWorkflowPanel';
 import { CommandPalette } from './components/CommandPalette';
 import { SessionInsightsPanel } from './components/SessionInsightsPanel';
-import { ShotExportReview } from './components/ShotExportReview';
+import { AIExportDialog, type AIExportMode } from './components/AIExportDialog';
 import type { PreparedComfyInputs } from './components/ComfyPanel';
 import { ACTION_LABELS, collectActionConflicts } from './domain/actions';
 import { analyzeDirectorWorkflow, type DirectorActionId } from './domain/directorWorkflow';
@@ -278,7 +278,7 @@ export default function App() {
   const timelineRef = useRef<HTMLElement>(null);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
-  const [exportReviewOpen, setExportReviewOpen] = useState(false);
+  const [aiExportOpen, setAIExportOpen] = useState(false);
   const [comfyOpen, setComfyOpen] = useState(false);
   const [sceneGeneratorOpen, setSceneGeneratorOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -831,59 +831,141 @@ export default function App() {
     };
   };
 
-  const performShotPackageExport = async () => {
-    if (!viewportRef.current || isExporting) return;
-    setExportReviewOpen(false);
-    setIsExporting(true);
-    recordCreatorEvent('export_started', { kind: 'shot-package', shotCount: scene.shots.length });
-    setExportStatus('시작 프레임 렌더링');
+  const composeAIExportPrompt = (mode: 'image' | 'video') => {
+    const sections = [
+      `[장면]\n${buildShotPrompt(scene, shot)}`,
+      mode === 'video' ? `[동작]\n${buildMotionPrompt(scene, shot)}` : null,
+      `[카메라]\n${buildCameraPrompt(scene, shot)}`,
+      `[피해야 할 요소]\n${DEFAULT_NEGATIVE_PROMPT}`,
+    ].filter(Boolean);
+    return sections.join('\n\n');
+  };
+
+  const copyAIExportPrompt = async (mode: 'image' | 'video') => {
+    const text = composeAIExportPrompt(mode);
     try {
-      const capture = async (time: number, mode: CaptureRenderMode, status: string) => {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+      else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
+      }
+      setExportStatus(`${mode === 'image' ? '이미지' : '영상'} AI용 프롬프트를 복사했습니다.`);
+    } catch {
+      setExportStatus('프롬프트를 복사하지 못했습니다. 내보내기 창의 텍스트를 직접 복사해 주세요.');
+    } finally {
+      setTimeout(() => setExportStatus(null), 3000);
+    }
+  };
+
+  const downloadAIReferenceFrame = async () => {
+    if (!viewportRef.current || isExporting) return;
+    setIsExporting(true);
+    setExportStatus('기준 이미지 렌더링');
+    try {
+      const blob = await viewportRef.current.captureFrame(0, 'beauty');
+      downloadBlob(blob, `${safeFilename(project.name)}_${safeFilename(shot.name)}_reference.png`);
+      setExportStatus('기준 이미지 다운로드 완료');
+    } catch (error) {
+      setExportStatus(error instanceof Error ? error.message : '기준 이미지를 만들지 못했습니다.');
+    } finally {
+      setIsExporting(false);
+      setTimeout(() => setExportStatus(null), 3000);
+    }
+  };
+
+  const downloadAIStartEndFrames = async () => {
+    if (!viewportRef.current || isExporting) return;
+    setIsExporting(true);
+    setExportStatus('시작·종료 이미지 렌더링');
+    try {
+      const startFrame = await viewportRef.current.captureFrame(0, 'beauty');
+      const endFrame = await viewportRef.current.captureFrame(shot.duration, 'beauty');
+      const zip = await createStoredZip([
+        { name: 'start_frame.png', data: startFrame },
+        { name: 'end_frame.png', data: endFrame },
+        { name: 'video_prompt.txt', data: composeAIExportPrompt('video') },
+      ]);
+      downloadBlob(zip, `${safeFilename(project.name)}_${safeFilename(shot.name)}_start-end.zip`);
+      setExportStatus('시작·종료 이미지 다운로드 완료');
+    } catch (error) {
+      setExportStatus(error instanceof Error ? error.message : '시작·종료 이미지를 만들지 못했습니다.');
+    } finally {
+      setIsExporting(false);
+      setTimeout(() => setExportStatus(null), 3000);
+    }
+  };
+
+  const performAIExport = async (mode: Exclude<AIExportMode, 'simple'>) => {
+    if (!viewportRef.current || isExporting) return;
+    setAIExportOpen(false);
+    setIsExporting(true);
+    recordCreatorEvent('export_started', { kind: `ai-${mode}`, shotCount: scene.shots.length });
+    setExportStatus('AI용 기준 프레임 렌더링');
+    try {
+      const capture = async (time: number, renderMode: CaptureRenderMode, status: string) => {
         setExportStatus(status);
-        const blob = await viewportRef.current!.captureFrame(time, mode);
+        const blob = await viewportRef.current!.captureFrame(time, renderMode);
         await new Promise((resolve) => setTimeout(resolve, 40));
         return blob;
       };
-      const startFrame = await capture(0, 'beauty', '시작 프레임 렌더링');
-      const endFrame = await capture(shot.duration, 'beauty', '종료 프레임 렌더링');
-      const poseStart = await capture(0, 'pose', '시작 Pose Map 렌더링');
-      const poseEnd = await capture(shot.duration, 'pose', '종료 Pose Map 렌더링');
-      const depthStart = await capture(0, 'depth', '시작 Depth Map 렌더링');
-      const depthEnd = await capture(shot.duration, 'depth', '종료 Depth Map 렌더링');
-      const maskStart = await capture(0, 'mask', '시작 객체 마스크 렌더링');
-      const maskEnd = await capture(shot.duration, 'mask', '종료 객체 마스크 렌더링');
-
-      setExportStatus('Shot Package 압축 중');
-      const manifest = buildShotPackageManifest(project, scene, shot);
-      const zip = await createStoredZip([
+      const startFrame = await capture(0, 'beauty', '기준 프레임 렌더링');
+      const poseStart = await capture(0, 'pose', 'Pose 가이드 렌더링');
+      const depthStart = await capture(0, 'depth', 'Depth 가이드 렌더링');
+      const maskStart = await capture(0, 'mask', '객체 마스크 렌더링');
+      const files: Array<{ name: string; data: Blob | string }> = mode === 'image' ? [
+        { name: 'frames/reference.png', data: startFrame },
+        { name: 'controls/pose.png', data: poseStart },
+        { name: 'controls/depth.png', data: depthStart },
+        { name: 'controls/entity_mask.png', data: maskStart },
+      ] : [
         { name: 'frames/start_frame.png', data: startFrame },
-        { name: 'frames/end_frame.png', data: endFrame },
+        { name: 'frames/end_frame.png', data: await capture(shot.duration, 'beauty', '종료 프레임 렌더링') },
         { name: 'controls/pose_start.png', data: poseStart },
-        { name: 'controls/pose_end.png', data: poseEnd },
+        { name: 'controls/pose_end.png', data: await capture(shot.duration, 'pose', '종료 Pose 렌더링') },
         { name: 'controls/depth_start.png', data: depthStart },
-        { name: 'controls/depth_end.png', data: depthEnd },
+        { name: 'controls/depth_end.png', data: await capture(shot.duration, 'depth', '종료 Depth 렌더링') },
         { name: 'controls/entity_mask_start.png', data: maskStart },
-        { name: 'controls/entity_mask_end.png', data: maskEnd },
+        { name: 'controls/entity_mask_end.png', data: await capture(shot.duration, 'mask', '종료 마스크 렌더링') },
+      ];
+      files.push(
+        { name: 'prompts/final_prompt.txt', data: composeAIExportPrompt(mode) },
         { name: 'prompts/scene_prompt.txt', data: buildShotPrompt(scene, shot) },
-        { name: 'prompts/motion_prompt.txt', data: buildMotionPrompt(scene, shot) },
         { name: 'prompts/camera_prompt.txt', data: buildCameraPrompt(scene, shot) },
         { name: 'prompts/negative_prompt.txt', data: DEFAULT_NEGATIVE_PROMPT },
-        { name: 'shot_manifest.json', data: JSON.stringify(manifest, null, 2) },
-      ]);
-      downloadBlob(zip, `${safeFilename(project.name)}_${safeFilename(shot.name)}_shot-package.zip`);
-      setExportStatus('Shot Package 내보내기 완료');
-      recordCreatorEvent('export_completed', { kind: 'shot-package', actionCount: shot.actions.length });
+      );
+      if (mode === 'video') files.push({ name: 'prompts/motion_prompt.txt', data: buildMotionPrompt(scene, shot) });
+
+      const manifest = buildShotPackageManifest(project, scene, shot);
+      files.push(
+        { name: 'shot_manifest.json', data: JSON.stringify({ ...manifest, aiExportMode: mode }, null, 2) },
+        { name: '사용법.txt', data: mode === 'image'
+          ? 'reference.png을 기준 이미지로 사용하고 final_prompt.txt를 프롬프트에 붙여넣으세요. 필요하면 Pose, Depth, entity_mask를 생성 도구의 제어 이미지로 연결하세요.'
+          : 'start_frame.png과 end_frame.png을 영상 생성 도구의 시작·종료 프레임으로 사용하고 final_prompt.txt를 붙여넣으세요. motion_prompt와 camera_prompt는 동작 및 카메라 지시입니다.' },
+      );
+
+      setExportStatus(`${mode === 'image' ? '이미지' : '영상'} AI 자료 압축 중`);
+      const zip = await createStoredZip(files);
+      const suffix = mode === 'image' ? 'image-ai' : 'video-ai';
+      downloadBlob(zip, `${safeFilename(project.name)}_${safeFilename(shot.name)}_${suffix}.zip`);
+      setExportStatus(`${mode === 'image' ? '이미지' : '영상'} AI용 내보내기 완료`);
+      recordCreatorEvent('export_completed', { kind: `ai-${mode}`, actionCount: shot.actions.length });
     } catch (error) {
-      recordCreatorEvent('error', { area: 'shot-export' });
-      setExportStatus(error instanceof Error ? error.message : 'Shot Package를 만들지 못했습니다.');
+      recordCreatorEvent('error', { area: 'ai-export' });
+      setExportStatus(error instanceof Error ? error.message : 'AI용 자료를 만들지 못했습니다.');
     } finally {
       setIsExporting(false);
       setTimeout(() => setExportStatus(null), 3500);
     }
   };
 
-  const requestShotPackageExport = () => {
-    setExportReviewOpen(true);
+  const requestAIExport = () => {
+    setAIExportOpen(true);
     recordCreatorEvent('workflow_navigated', { action: 'export-review', readiness: exportPreflight.status });
   };
 
@@ -946,11 +1028,11 @@ export default function App() {
       return;
     }
     if (action === 'openProjectDoctor') { setDoctorOpen(true); return; }
-    if (action === 'exportShotPackage') { requestShotPackageExport(); }
+    if (action === 'exportShotPackage') { requestAIExport(); }
   };
 
   const handleExportQuickFix = () => {
-    setExportReviewOpen(false);
+    setAIExportOpen(false);
     if (exportPreflight.quickAction === 'selectCamera') handleDirectorAction('selectShotCamera');
     else if (exportPreflight.quickAction === 'focusTimeline') handleDirectorAction('focusTimeline');
     else handleDirectorAction('openProjectDoctor');
@@ -1000,7 +1082,7 @@ export default function App() {
     if (id === 'focusShotStrip') { handleDirectorAction('focusShotStrip'); return; }
     if (id === 'focusTimeline') { handleDirectorAction('focusTimeline'); return; }
     if (id === 'openProjectDoctor') { setDoctorOpen(true); recordCreatorEvent('project_checked', { source }); return; }
-    if (id === 'exportShotPackage') { requestShotPackageExport(); return; }
+    if (id === 'exportShotPackage') { requestAIExport(); return; }
     if (id === 'toggleFocusMode') { setFocusMode((value) => !value); return; }
     if (id === 'toggleWorkflow') { setWorkflowCollapsed((value) => !value); return; }
     if (id === 'undo') { if (undoCount) undo(); return; }
@@ -1093,36 +1175,40 @@ export default function App() {
             <button className="compact-action focus-essential" title="실행 취소 (Ctrl/Cmd+Z)" onClick={undo} disabled={!undoCount}><span aria-hidden="true">↶</span><b>취소</b></button>
             <button className="compact-action focus-essential" title="다시 실행 (Ctrl/Cmd+Shift+Z)" onClick={redo} disabled={!redoCount}><span aria-hidden="true">↷</span><b>다시</b></button>
           </div>
+          <div className="product-flow-actions" aria-label="핵심 제작 흐름">
+            <button className="flow-action focus-essential" onClick={() => executeCommand('openSceneGenerator')}><i>1</i><span>장면 만들기</span></button>
+            <button className="flow-action focus-essential" onClick={selectPrimarySubject}><i>2</i><span>장면 수정하기</span></button>
+            <button className="flow-action export primary-export focus-essential" disabled={isExporting} onClick={requestAIExport}><i>3</i><span>{isExporting ? '생성 중…' : 'AI용 내보내기'}</span></button>
+          </div>
           <button className="command-search-button focus-essential" onClick={openCommandPalette}><span>명령 검색</span><kbd>⌘K</kbd></button>
-          <button className="scene-generator-button focus-essential" onClick={() => executeCommand('openSceneGenerator')}>AI 씬 생성</button>
-          <button className="primary-export focus-essential" disabled={isExporting} onClick={requestShotPackageExport}>{isExporting ? '생성 중…' : '샷 패키지'}</button>
-          <button className="usage-button focus-essential" title="처음부터 따라 하는 6단계 사용법" onClick={() => setOnboardingOpen(true)}>사용법</button>
-          <details className="header-menu tools-menu">
-            <summary>도구</summary>
-            <div className="header-popover">
-              <span className="menu-label">편집 도구</span>
+          <button className="usage-button focus-essential" title="장면 만들기부터 AI용 내보내기까지" onClick={() => setOnboardingOpen(true)}>사용법</button>
+          <details className="header-menu advanced-menu tools-menu">
+            <summary>고급 도구</summary>
+            <div className="header-popover wide">
+              <span className="menu-label">고급 연결·진단</span>
               <button className="comfy-button" onClick={() => setComfyOpen(true)}>ComfyUI 연결</button>
               <button onClick={() => setDoctorOpen(true)}>프로젝트 점검</button>
               <button onClick={() => setSessionInsightsOpen(true)}>세션 기록</button>
+              <button onClick={() => downloadProject(project)}>JSON 내보내기</button>
+              <button onClick={() => fileInputRef.current?.click()}>JSON 불러오기</button>
+              <input ref={fileInputRef} className="file-input" type="file" accept=".json,.aiscene.json" onChange={(event) => importFile(event.target.files?.[0])} />
+              <div className="menu-divider" />
+              <span className="menu-label">환경·저장소</span>
               <button className="focus-toggle" onClick={() => setFocusMode((value) => !value)}>{focusMode ? '집중 모드 종료' : '집중 모드'}</button>
               <button onClick={() => void cleanupLocalAssets()}>저장소 정리</button>
+              <button className="danger" onClick={reset}>샘플 초기화</button>
             </div>
           </details>
           <details className="header-menu project-menu">
             <summary>프로젝트</summary>
             <div className="header-popover wide">
-              <span className="menu-label">저장·불러오기</span>
+              <span className="menu-label">작업 저장·복원</span>
               <button onClick={connectWorkspace}>{workspaceLabel ? '프로젝트 폴더 변경' : '프로젝트 폴더 연결'}</button>
               <button disabled={!workspaceLabel || isExporting} onClick={saveWorkspaceBundle}>연결 폴더에 저장</button>
               <button disabled={!recoveryCount} onClick={restoreLatestRecovery}>최근 복구본 ({recoveryCount})</button>
-              <button className="bundle-button" disabled={isExporting} onClick={exportProjectBundle}>프로젝트 번들 내보내기</button>
-              <button onClick={() => bundleInputRef.current?.click()}>프로젝트 번들 불러오기</button>
+              <button className="bundle-button" disabled={isExporting} onClick={exportProjectBundle}>프로젝트 백업 ZIP</button>
+              <button onClick={() => bundleInputRef.current?.click()}>프로젝트 백업 불러오기</button>
               <input ref={bundleInputRef} className="file-input" type="file" accept=".zip,.aiscene.zip,application/zip" onChange={(event) => importBundleFile(event.target.files?.[0])} />
-              <div className="menu-divider" />
-              <button onClick={() => downloadProject(project)}>JSON 내보내기</button>
-              <button onClick={() => fileInputRef.current?.click()}>JSON 불러오기</button>
-              <input ref={fileInputRef} className="file-input" type="file" accept=".json,.aiscene.json" onChange={(event) => importFile(event.target.files?.[0])} />
-              <button className="danger" onClick={reset}>샘플 초기화</button>
             </div>
           </details>
         </nav>
@@ -1452,7 +1538,7 @@ export default function App() {
       <section ref={timelineRef} className={`timeline-panel ${focusedArea === 'timeline' ? 'workflow-focus-target' : ''}`}>
         <div className="timeline-controls">
           <button onClick={() => setPlayheadTime(0)}>처음</button>
-          <button className={isPlaying ? 'active' : ''} onClick={togglePlayback}>{isPlaying ? '정지' : '재생'}</button>
+          <button className={isPlaying ? 'active' : ''} onClick={togglePlayback}>{isPlaying ? '미리보기 정지' : '동작 미리보기'}</button><span className="timeline-purpose">생성 전 움직임 검수</span>
           <strong>{playheadTime.toFixed(2)} / {shot.duration.toFixed(2)}초</strong>
           <input type="range" min={0} max={shot.duration} step={0.01} value={playheadTime} onChange={(event) => setPlayheadTime(Number(event.target.value))} />
         </div>
@@ -1555,14 +1641,20 @@ export default function App() {
 
       <CommandPalette open={commandPaletteOpen} commands={commandCatalog} onClose={() => setCommandPaletteOpen(false)} onExecute={(id) => executeCommand(id, 'palette')} />
       <SessionInsightsPanel open={sessionInsightsOpen} session={creatorSession} onClose={() => setSessionInsightsOpen(false)} onClear={() => { const next = appendCreatorSessionEvent(createCreatorSession(), 'session_started', { appVersion: project.schemaVersion }); setCreatorSession(next); saveCreatorSession(next); }} />
-      <ShotExportReview
-        open={exportReviewOpen}
+      <AIExportDialog
+        open={aiExportOpen}
         shotName={shot.name}
         preflight={exportPreflight}
         isExporting={isExporting}
-        onClose={() => setExportReviewOpen(false)}
-        onConfirm={() => void performShotPackageExport()}
+        scenePrompt={buildShotPrompt(scene, shot)}
+        motionPrompt={buildMotionPrompt(scene, shot)}
+        cameraPrompt={buildCameraPrompt(scene, shot)}
+        onClose={() => setAIExportOpen(false)}
+        onExport={(mode) => void performAIExport(mode)}
         onQuickFix={handleExportQuickFix}
+        onCopyPrompt={(mode) => void copyAIExportPrompt(mode)}
+        onDownloadReference={() => void downloadAIReferenceFrame()}
+        onDownloadStartEnd={() => void downloadAIStartEndFrames()}
       />
 
       {exportStatus && <div className="export-status">{exportStatus}</div>}

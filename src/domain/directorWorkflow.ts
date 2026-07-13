@@ -263,7 +263,7 @@ export function analyzeDirectorWorkflow(project: Project, sceneId?: string, acti
       { label: '활성 샷', passed: Boolean(activeShot && shotCameraValid(scene, activeShot)), detail: '필수 · 현재 샷을 미리 볼 수 있어야 합니다.' },
       { label: '충돌 없음', passed: totalConflicts === 0, detail: 'Action 충돌을 해결해야 합니다.' },
     ]),
-    stage('export', '6. 출력', '생성 AI 또는 스토리보드용 Shot Package를 만듭니다.', 'exportShotPackage', '현재 샷 출력', [
+    stage('export', '6. AI용 내보내기', '이미지·영상 생성 AI가 이해할 프레임·제어 이미지·프롬프트를 만듭니다.', 'exportShotPackage', 'AI용 내보내기', [
       { label: '출력 준비', passed: shotReadiness.every((item) => item.status === 'ready') && invalidShots === 0, detail: '모든 샷이 출력 가능한 상태여야 합니다.' },
     ]),
   ];
@@ -283,7 +283,7 @@ export function analyzeDirectorWorkflow(project: Project, sceneId?: string, acti
   } else if (totalConflicts > 0 || invalidShots > 0) {
     nextAction = { id: 'openProjectDoctor', label: '문제 점검하기', reason: '출력 전에 충돌하거나 끊어진 참조를 해결해야 합니다.' };
   } else if (activeShot && shotCameraValid(scene, activeShot)) {
-    nextAction = { id: 'exportShotPackage', label: '현재 샷 출력', reason: '현재 샷은 생성 AI용 패키지로 내보낼 수 있습니다.' };
+    nextAction = { id: 'exportShotPackage', label: 'AI용으로 내보내기', reason: '현재 샷을 이미지·영상 생성 AI용 자료로 내보낼 수 있습니다.' };
   } else {
     nextAction = { id: 'selectPrimarySubject', label: '핵심 피사체 선택', reason: '주인공 또는 제품의 배치와 구도를 먼저 확인하세요.' };
   }

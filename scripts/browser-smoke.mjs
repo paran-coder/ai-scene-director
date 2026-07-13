@@ -222,7 +222,7 @@ try {
   let injectedBundle = null;
   while (Date.now() < deadline) {
     const result = await cdp.send('Runtime.evaluate', {
-      expression: `(() => { const app = document.querySelector('[data-aisd-ready="true"]'); const bodyText = document.body.innerText; const runtimeNode = document.querySelector('[data-runtime-status]'); return { ready: Boolean(app), runtime: runtimeNode ? runtimeNode.getAttribute('data-runtime-status') : null, safeMode: Boolean(document.querySelector('[data-testid="viewport-safe-mode"]')), hasSceneGenerator: bodyText.includes('AI 씬 생성'), hasSceneHierarchy: bodyText.includes('씬 계층'), hasTimeline: Boolean(document.querySelector('.timeline-panel')), title: document.title, readyState: document.readyState, text: bodyText.slice(0, 1600), rootHtml: document.getElementById('root')?.innerHTML.slice(0, 1200) ?? '' }; })()`,
+      expression: `(() => { const app = document.querySelector('[data-aisd-ready="true"]'); const bodyText = document.body.innerText; const runtimeNode = document.querySelector('[data-runtime-status]'); return { ready: Boolean(app), runtime: runtimeNode ? runtimeNode.getAttribute('data-runtime-status') : null, safeMode: Boolean(document.querySelector('[data-testid="viewport-safe-mode"]')), hasSceneGenerator: bodyText.includes('장면 만들기'), hasSceneHierarchy: bodyText.includes('씬 계층'), hasTimeline: Boolean(document.querySelector('.timeline-panel')), title: document.title, readyState: document.readyState, text: bodyText.slice(0, 1600), rootHtml: document.getElementById('root')?.innerHTML.slice(0, 1200) ?? '' }; })()`,
       returnByValue: true,
     });
     state = result?.result?.value;
@@ -241,7 +241,8 @@ try {
     throw Object.assign(new Error('핵심 편집 UI가 브라우저 DOM에 표시되지 않았습니다.'), { appFailure: true, pageState: state });
   }
   if (state.runtime === 'unsupported' && !state.safeMode) throw Object.assign(new Error('WebGL 미지원 환경에서 3D 안전 모드가 활성화되지 않았습니다.'), { appFailure: true, pageState: state });
-  await new Promise((resolve) => setTimeout(resolve, 350));
+  await cdp.send('Runtime.evaluate', { expression: `document.querySelector('.onboarding-actions button')?.click()` });
+  await new Promise((resolve) => setTimeout(resolve, 180));
   await cdp.send('Runtime.evaluate', {
     expression: `document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', code: 'KeyK', ctrlKey: true, bubbles: true, cancelable: true }))`,
   });
@@ -257,12 +258,15 @@ try {
   await cdp.send('Runtime.evaluate', { expression: `document.querySelector('.primary-export')?.click()` });
   await new Promise((resolve) => setTimeout(resolve, 180));
   const exportReviewResult = await cdp.send('Runtime.evaluate', {
-    expression: `(() => { const dialog = document.querySelector('[role="dialog"][aria-label="샷 패키지 출력 확인"]'); const text = dialog?.innerText ?? ''; return { open: Boolean(dialog), hasFilePlan: text.includes('생성되는 파일'), blocked: text.includes('출력 전 수정 필요'), confirmVisible: text.includes('Shot Package 생성') }; })()`,
+    expression: `(() => { const dialog = document.querySelector('[role="dialog"][aria-label="AI용 내보내기"]'); const text = dialog?.innerText ?? ''; return { open: Boolean(dialog), hasFilePlan: text.includes('이미지 생성용') && text.includes('영상 생성용'), blocked: text.includes('출력 전 수정 필요'), confirmVisible: text.includes('이미지 AI 자료 ZIP') }; })()`,
     returnByValue: true,
   });
   const exportReview = exportReviewResult?.result?.value;
-  if (!exportReview?.open || !exportReview.hasFilePlan) throw Object.assign(new Error('Shot Package 출력 사전점검 대화상자가 열리지 않았습니다.'), { appFailure: true, pageState: state });
-  await cdp.send('Runtime.evaluate', { expression: `document.querySelector('[role="dialog"][aria-label="샷 패키지 출력 확인"] .modal-header button')?.click()` });
+  if (!exportReview?.open || !exportReview.hasFilePlan) throw Object.assign(new Error('AI용 내보내기 대화상자가 열리지 않았습니다.'), { appFailure: true, pageState: state });
+  const exportPreview = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+  const exportPreviewName = notebookProfile ? 'ai-export-preview-notebook.png' : 'ai-export-preview.png';
+  await writeFile(new URL(`../dist/${exportPreviewName}`, import.meta.url), Buffer.from(exportPreview.data, 'base64'));
+  await cdp.send('Runtime.evaluate', { expression: `document.querySelector('[role="dialog"][aria-label="AI용 내보내기"] .modal-header button')?.click()` });
   await new Promise((resolve) => setTimeout(resolve, 120));
   const layoutResult = await cdp.send('Runtime.evaluate', {
     expression: `(() => {

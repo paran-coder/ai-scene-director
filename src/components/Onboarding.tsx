@@ -1,37 +1,32 @@
 import { useState } from 'react';
 
-const STORAGE_KEY = 'ai-scene-director-onboarding-front-view-v1';
+const STORAGE_KEY = 'ai-scene-director-onboarding-ai-export-v2';
 
 const STEPS = [
   {
-    title: '1. 화면 방향부터 맞추기',
-    body: '처음 열면 자유 시점이 장면의 정면에서 시작합니다. 화면이 돌아갔다면 뷰포트 위의 ‘정면 맞춤’을 누르세요.',
-    checklist: ['왼쪽 드래그: 시점 회전', '오른쪽 드래그: 화면 이동', '마우스 휠: 확대·축소'],
+    title: '1. 장면 만들기',
+    body: '상단의 ‘1 장면 만들기’를 누르고 장소, 인물, 소품과 원하는 구도를 자연어로 입력합니다.',
+    checklist: ['예: 비 오는 밤 편의점 앞에서 두 사람이 마주 본다', '와이드·클로즈업처럼 원하는 샷을 함께 입력', '분석 결과를 확인하고 장면 적용'],
   },
   {
-    title: '2. 자연어로 장면 초안 만들기',
-    body: '상단의 ‘AI 씬 생성’을 누르고 장소, 인물, 소품, 원하는 샷 순서를 문장으로 입력합니다.',
-    checklist: ['예: 카페에서 두 사람이 마주 앉아 대화한다', '와이드 → 오버숄더 → 클로즈업처럼 샷 순서 입력', '분석 결과를 확인한 뒤 장면 적용'],
+    title: '2. 장면 수정하기',
+    body: '‘2 장면 수정하기’를 누르면 핵심 인물이나 제품이 선택됩니다. 뷰포트에서 위치·방향·포즈와 카메라를 원하는 대로 조절하세요.',
+    checklist: ['왼쪽 드래그: 시점 회전 · 오른쪽 드래그: 화면 이동', 'W: 이동 · E: 회전 · R: 크기', 'P: 인물 포즈와 IK · 화면이 돌아가면 정면 맞춤'],
   },
   {
-    title: '3. 인물과 소품 직접 수정하기',
-    body: '왼쪽 씬 계층에서 객체를 선택한 뒤 뷰포트의 이동·회전·크기 버튼으로 위치와 방향을 수정합니다.',
-    checklist: ['W: 이동', 'E: 회전', 'R: 크기', 'P: 캐릭터 포즈·IK'],
+    title: '동작 미리보기는 선택 사항',
+    body: '걷기나 카메라 이동이 있을 때만 ‘동작 미리보기’로 생성 전 움직임을 검수합니다. 이 재생 화면은 완성 영상이 아닙니다.',
+    checklist: ['타임라인 블록을 드래그해 시작 시간 변경', '블록 가장자리로 행동 길이 조절', '정적인 이미지 장면은 미리보기를 건너뛰어도 됨'],
   },
   {
-    title: '4. 샷과 카메라 구성하기',
-    body: '화면 아래 Shot 카드를 선택해 샷별 카메라와 구도를 편집합니다. ‘샷 카메라’를 누르면 실제 출력 구도를 확인할 수 있습니다.',
-    checklist: ['+ 새 샷: 다른 구도 추가', '샷 카메라: 실제 렌즈 화면 확인', '오른쪽 속성: FOV·화면비·조명 수정'],
+    title: '3. AI용 내보내기',
+    body: '‘3 AI용 내보내기’에서 이미지 생성용, 영상 생성용 또는 간단 내보내기를 선택합니다.',
+    checklist: ['이미지용: 기준 이미지 + Pose·Depth·Mask + 프롬프트', '영상용: 시작·종료 프레임 + 동작·카메라 프롬프트', '간단 내보내기: 프롬프트 복사 또는 필요한 이미지만 다운로드'],
   },
   {
-    title: '5. 타임라인에 행동 넣기',
-    body: '걷기, 집기, 뒤돌기, 카메라 이동을 선택하고 ‘현재 시간에 추가’를 누릅니다. 생성된 블록은 드래그해 시간을 조절합니다.',
-    checklist: ['재생으로 결과 확인', '블록 가장자리 드래그: 길이 조절', '0초에서 기본 위치와 포즈 수정'],
-  },
-  {
-    title: '6. 점검하고 출력하기',
-    body: '‘프로젝트 점검’으로 카메라·관계·행동 오류를 확인한 뒤 ‘Shot Package’로 프레임, Pose, Depth, Mask와 프롬프트를 출력합니다.',
-    checklist: ['Ctrl/Cmd+K: 모든 기능 검색', 'Ctrl/Cmd+S: 프로젝트 저장', '도움이 필요하면 상단 ‘사용법’을 다시 열기'],
+    title: '고급 기능은 필요할 때만',
+    body: 'ComfyUI, 프로젝트 점검, JSON, 세션 기록과 저장소 정리는 ‘고급 도구’ 안에 있습니다. 일반 제작 흐름에서는 열지 않아도 됩니다.',
+    checklist: ['프로젝트 메뉴: 작업 저장·백업', '고급 도구: 외부 연결·진단·개발자용 데이터', 'Ctrl/Cmd+K: 모든 명령 검색'],
   },
 ];
 
@@ -54,7 +49,7 @@ export function Onboarding({ open, onClose, onOpenSceneGenerator }: { open: bool
         <div className="onboarding-progress" aria-label={`${step + 1}/${STEPS.length}`}>
           {STEPS.map((_, index) => <i key={index} className={index <= step ? 'active' : ''} />)}
         </div>
-        <span className="eyebrow">AI Scene Director 1.0 RC10 · 빠른 사용법 · {step + 1}/{STEPS.length}</span>
+        <span className="eyebrow">AI Scene Director 1.0 RC11 · 3단계 사용법 · {step + 1}/{STEPS.length}</span>
         <h2 id="onboarding-title">{current.title}</h2>
         <p>{current.body}</p>
         <ul className="onboarding-checklist">

@@ -221,8 +221,15 @@ export function AssetLibraryPanel() {
               </div>
               <div className="asset-library-actions">
                 <button disabled={!compatible || !available || selectedAssetId === item.id} onClick={() => assignAssetToSelected(item.id)}>적용</button>
-                {available && <button onClick={() => reanalyzeRig(item)}>리그 분석</button>}
-                {item.rig && <button onClick={() => setEditingRigAssetId(editingRigAssetId === item.id ? null : item.id)}>매핑 편집</button>}
+                {(available || item.rig) && (
+                  <details className="asset-advanced-tools">
+                    <summary>고급 리그</summary>
+                    <div>
+                      {available && <button onClick={() => reanalyzeRig(item)}>리그 다시 분석</button>}
+                      {item.rig && <button onClick={() => setEditingRigAssetId(editingRigAssetId === item.id ? null : item.id)}>본 매핑·축 보정</button>}
+                    </div>
+                  </details>
+                )}
                 {!available ? <button onClick={() => openImport(item.id)}>재연결</button> : <button className="danger" onClick={() => removeAsset(item.id)}>제거</button>}
               </div>
               {editingRigAssetId === item.id && item.rig && (

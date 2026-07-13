@@ -1,31 +1,37 @@
-# GitHub·Vercel 업데이트 안내
+# GitHub·Vercel 업로드 안내 — RC11
 
-이 폴더는 GitHub 웹 업로드 100개 제한 안에 맞춘 UI 수정본입니다.
+이 패키지는 GitHub 웹 업로드 100개 제한 안에 맞춘 소스 배포본입니다.
 
-- 실제 파일 수: 최종 ZIP 기준 91개 이하
-- 제외: `node_modules`, `dist`, 빌드 캐시, 임시 릴리스 보고서
+- 실제 업로드 파일 수: **93개**
 
-## 반영 순서
+## 업로드
 
-1. 이 ZIP을 압축 해제합니다.
-2. GitHub 저장소의 기존 소스 파일을 이 폴더 내용으로 교체합니다.
-3. `.github`, `.gitignore`, `vercel.json` 같은 숨김·설정 파일도 함께 업로드합니다.
-4. Vercel에서 해당 저장소와 브랜치가 연결됐는지 확인합니다.
-5. Vercel Deployments에서 **Redeploy**를 선택하고 **Use existing Build Cache를 끈 상태**로 다시 배포합니다.
-6. 배포 후 상단에 `schema 1.0.0-rc.10`, 뷰포트에 `정면 맞춤`, 헤더에 `사용법`이 표시되는지 확인합니다.
+1. ZIP을 압축 해제합니다.
+2. 압축 내부의 모든 파일과 폴더를 GitHub 저장소 루트에 업로드합니다.
+3. `.github`, `.gitignore`, `.npmrc`, `.nvmrc`, `vercel.json`을 빠뜨리지 않습니다.
+4. ZIP 자체나 `node_modules`, `dist`는 저장소에 올리지 않습니다.
 
-## 수정 내용
+## Vercel 설정
 
-- 초기 자유 시점을 장면 정면(-Z)으로 변경
-- 거대한 뒷벽이 피사체를 가리지 않도록 자동 프레이밍 개선
-- `정면 맞춤` 복구 버튼 추가
-- 마우스 시점 조작 힌트 추가
-- 처음 접속 시 6단계 사용법 자동 표시
-- 상단에서 언제든 다시 여는 `사용법` 버튼 추가
-- 헤더 기능을 핵심 작업·도구·프로젝트 메뉴로 재구성
-- 근접 검정·노랑 중심 디자인 토큰과 패널·샷·타임라인 위계 통일
-- Shot Package 출력 사전점검과 생성 파일 미리보기
-- 1366×768 노트북 화면 잘림 방지 및 자동 검증
+```text
+Framework Preset: Vite
+Root Directory: 비워 두기
+Install Command: npm ci
+Build Command: npm run build
+Output Directory: dist
+Node.js: 22.x
+```
+
+배포가 실패했던 저장소에서는 Build Cache를 사용하지 않고 다시 배포합니다.
+
+## 정상 반영 확인
+
+- 상단에 `schema 1.0.0-rc.11`
+- `1 장면 만들기`
+- `2 장면 수정하기`
+- 노란색 `3 AI용 내보내기`
+- 타임라인에 `동작 미리보기`
+- `고급 도구` 안에 ComfyUI·JSON·점검·세션 기록
 
 ## 로컬 검증
 
@@ -33,11 +39,4 @@
 npm ci
 npm test
 npm run build
-npm run browser:smoke:notebook
 ```
-
-
-## Vercel 설치 오류 수정
-
-이 패키지는 `package-lock.json`의 패키지 주소를 공개 npm 레지스트리로 정리했습니다.
-Vercel 재배포 전에 `package.json`, `package-lock.json`, `vercel.json`을 반드시 최신 파일로 교체하세요.

@@ -47,3 +47,13 @@ This package includes the first-edit guide layout patch. After deployment, creat
 ## 이번 수정
 
 - `UI_EXPORT_DIALOG_FIX.md`: 내보내기 팝업의 중복 닫기 제거와 글자 크기 개선 내용
+
+## 메인 화면 타이포그래피 수정
+
+- 패널 제목 16px
+- 객체·샷 이름 14px
+- 버튼·입력 13px
+- 보조 정보 최소 11~12px
+- 브라우저 계산 글자 크기 자동 검사 포함
+
+자세한 내용은 `UI_MAIN_TYPOGRAPHY.md`를 참고하세요.

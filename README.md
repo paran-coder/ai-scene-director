@@ -126,3 +126,7 @@ Install Command: npm ci
 Build Command: npm run build
 Output Directory: dist
 ```
+
+## 메인 화면 가독성
+
+메인 편집기의 패널, 객체 목록, 샷 카드, 타임라인, 입력 컨트롤에 11~16px 단계형 타이포그래피를 적용했습니다. 세부 기준은 `UI_MAIN_TYPOGRAPHY.md`에 정리되어 있습니다.

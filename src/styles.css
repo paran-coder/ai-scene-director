@@ -1224,3 +1224,83 @@ button.danger { color: var(--ui-danger); }
 }
 .director-stages.macro { grid-template-columns: repeat(3, minmax(150px, 1fr)); }
 .director-stages.macro .director-stage { min-height: 46px; }
+
+/* RC11 main-screen typography readability pass.
+   Preserve the compact editor layout while preventing critical UI copy from falling below 11px. */
+:root {
+  --ui-type-title: 15px;
+  --ui-type-body: 13px;
+  --ui-type-label: 12px;
+  --ui-type-caption: 11px;
+  --ui-type-control: 13px;
+}
+
+body {
+  font-family: Inter, Pretendard, "Noto Sans KR", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: var(--ui-type-body);
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+}
+
+/* Header */
+.project-identity strong { font-size: 15px; line-height: 1.3; }
+.project-identity span { font-size: 11px !important; line-height: 1.35; }
+.status-chip { font-size: 11px !important; line-height: 1.3; }
+.app-header button, .header-menu > summary { font-size: var(--ui-type-control); }
+.compact-action > b, .command-search-button kbd, .menu-label { font-size: 10px !important; }
+.header-popover button { font-size: 13px; }
+
+/* Side panels and forms */
+.panel h2 { font-size: 16px; line-height: 1.35; }
+.panel h3, .asset-library-panel h3 { font-size: 13px; line-height: 1.4; }
+.panel-title-row span, .section-title-row button { font-size: 12px; }
+button, select, input, textarea { font-size: var(--ui-type-control); line-height: 1.4; }
+.entity span { font-size: 11px; }
+.entity strong { font-size: 14px; line-height: 1.35; }
+.entity small { font-size: 11px; line-height: 1.35; }
+.button-grid button, .pose-presets button, .pose-actions button, .ik-grid button { font-size: 12px; }
+.stacked-label, .inspector label { font-size: 13px; line-height: 1.4; }
+.help-text, .joint-name, .relationship-row span, .notice { font-size: 12px; line-height: 1.55; }
+.relationship-inspector .section-title-row span, .appearance-card p, .asset-card p { font-size: 12px; }
+.appearance-card dl div, .asset-card dl div { font-size: 12px; }
+.asset-library-item strong { font-size: 13px; }
+.asset-library-item span, .asset-status { font-size: 11px; }
+.asset-import-row select, .asset-import-row button { font-size: 12px; }
+.asset-advanced-tools > summary { font-size: 11px; }
+
+/* Viewport and workflow guidance */
+.viewport-badge, .viewport-hint, .navigation-hint { font-size: 13px; line-height: 1.4; }
+.viewport-toolbar button { font-size: 13px; }
+.director-stage span { font-size: 11px; line-height: 1.35; }
+.director-next > span { font-size: 10px; }
+.director-next strong { font-size: 14px; line-height: 1.35; }
+.director-next small { font-size: 12px; line-height: 1.4; }
+.shot-readiness { font-size: 11px; line-height: 1.35; }
+
+/* Shot strip */
+.shot { font-size: 13px; }
+.shot strong { font-size: 14px; line-height: 1.35; }
+.shot span { font-size: 12px; line-height: 1.4; }
+.shot-actions button { font-size: 12px; }
+.shot-editor label { font-size: 12px; line-height: 1.35; }
+.shot-editor input { font-size: 13px; }
+
+/* Timeline and command bar */
+.timeline-controls strong { font-size: 13px; }
+.timeline-purpose { font-size: 12px; }
+.timeline-ruler { font-size: 11px; }
+.timeline-empty { font-size: 13px; line-height: 1.5; }
+.action-track > span { font-size: 12px; }
+.action-track > i { font-size: 11px; }
+.action-editor strong { font-size: 14px; }
+.action-editor label { font-size: 12px; }
+.action-editor button { font-size: 12px; }
+.command-bar input, .command-bar select, .command-bar button { font-size: 13px; }
+
+/* Compact-height screens keep the larger type, but reduce only non-essential metadata. */
+@media (max-height: 820px) {
+  .status-chip { font-size: 10px !important; }
+  .director-stage span { font-size: 10px; }
+  .shot span { font-size: 12px; }
+  .timeline-purpose { font-size: 11px; }
+}

@@ -266,7 +266,30 @@ try {
   const exportPreview = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   const exportPreviewName = notebookProfile ? 'ai-export-preview-notebook.png' : 'ai-export-preview.png';
   await writeFile(new URL(`../dist/${exportPreviewName}`, import.meta.url), Buffer.from(exportPreview.data, 'base64'));
-  await cdp.send('Runtime.evaluate', { expression: `document.querySelector('[role="dialog"][aria-label="AI용 내보내기"] .modal-header button')?.click()` });
+  await cdp.send('Runtime.evaluate', { expression: `document.querySelector('.ai-export-guide-link')?.click()` });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  const exportGuideResult = await cdp.send('Runtime.evaluate', {
+    expression: `(() => { const guide = document.querySelector('[role="dialog"][aria-labelledby="ai-export-guide-title"]'); const text = guide?.innerText ?? ''; return { open: Boolean(guide), hasQuickStart: text.includes('기준 이미지와 최종 프롬프트'), hasImageGuide: text.includes('이미지 생성용'), hasVideoGuide: text.includes('영상 생성용'), hasComfyGuide: text.includes('ComfyUI'), fileRows: guide?.querySelectorAll('.guide-file-row').length ?? 0 }; })()`,
+    returnByValue: true,
+  });
+  const exportGuide = exportGuideResult?.result?.value;
+  if (!exportGuide?.open || !exportGuide.hasQuickStart || !exportGuide.hasImageGuide || !exportGuide.hasVideoGuide || exportGuide.fileRows < 10) {
+    throw Object.assign(new Error('AI용 내보내기 사용법 페이지가 열리지 않았거나 핵심 설명이 누락됐습니다.'), { appFailure: true, pageState: state, exportGuide });
+  }
+  const guidePreview = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+  const guidePreviewName = notebookProfile ? 'ai-export-guide-preview-notebook.png' : 'ai-export-guide-preview.png';
+  await writeFile(new URL(`../dist/${guidePreviewName}`, import.meta.url), Buffer.from(guidePreview.data, 'base64'));
+  await cdp.send('Runtime.evaluate', { expression: `Array.from(document.querySelectorAll('.ai-export-guide-page button')).find((button) => button.textContent?.trim() === '영상 생성용 내보내기')?.click()` });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  const guideHandoffResult = await cdp.send('Runtime.evaluate', {
+    expression: `(() => { const dialog = document.querySelector('[role="dialog"][aria-label="AI용 내보내기"]'); const active = dialog?.querySelector('.ai-export-mode-grid > button.active'); return { dialogOpen: Boolean(dialog), activeMode: active?.textContent ?? '' }; })()`,
+    returnByValue: true,
+  });
+  const guideHandoff = guideHandoffResult?.result?.value;
+  if (!guideHandoff?.dialogOpen || !String(guideHandoff.activeMode).includes('영상 생성용')) {
+    throw Object.assign(new Error('사용법 페이지에서 영상 내보내기 화면으로 이동하지 못했습니다.'), { appFailure: true, pageState: state, guideHandoff });
+  }
+  await cdp.send('Runtime.evaluate', { expression: `document.querySelector('.ai-export-close')?.click()` });
   await new Promise((resolve) => setTimeout(resolve, 120));
 
   // Mount the same first-edit guide markup as a workspace child and verify its real browser geometry.
@@ -316,7 +339,17 @@ try {
       const rect = (selector) => { const node = document.querySelector(selector); if (!node) return null; const value = node.getBoundingClientRect(); return { top: value.top, left: value.left, right: value.right, bottom: value.bottom, width: value.width, height: value.height }; };
       const header = document.querySelector('.app-header');
       const visible = (value) => Boolean(value && value.bottom > 0 && value.top < window.innerHeight && value.right > 0 && value.left < window.innerWidth);
+      const fontSize = (selector) => { const node = document.querySelector(selector); return node ? Number.parseFloat(getComputedStyle(node).fontSize) : null; };
       const areas = { header: rect('.app-header'), workspace: rect('.workspace'), shots: rect('.shot-strip'), timeline: rect('.timeline-panel'), command: rect('.command-bar') };
+      const typography = {
+        headerButton: fontSize('.app-header button'),
+        panelTitle: fontSize('.panel h2'),
+        entityName: fontSize('.entity strong'),
+        entityMeta: fontSize('.entity small'),
+        shotMeta: fontSize('.shot span'),
+        timelineText: fontSize('.timeline-empty'),
+        commandInput: fontSize('.command-bar input'),
+      };
       return {
         viewport: { width: window.innerWidth, height: window.innerHeight },
         document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
@@ -324,6 +357,7 @@ try {
         verticalOverflow: Math.max(0, document.documentElement.scrollHeight - window.innerHeight),
         headerOverflow: header ? Math.max(0, header.scrollWidth - header.clientWidth) : null,
         areas,
+        typography,
         visible: { workspace: visible(areas.workspace), shots: visible(areas.shots), timeline: visible(areas.timeline), command: visible(areas.command) },
       };
     })()`,
@@ -339,13 +373,26 @@ try {
   if (notebookProfile && (layout.areas?.workspace?.height ?? 0) < 220) {
     throw Object.assign(new Error('노트북 화면에서 3D 작업 영역 높이가 220px보다 작습니다.'), { appFailure: true, pageState: state, layout });
   }
+  const type = layout.typography ?? {};
+  const tooSmall = [
+    ['헤더 버튼', type.headerButton, 13],
+    ['패널 제목', type.panelTitle, 15],
+    ['객체 이름', type.entityName, 14],
+    ['객체 보조 정보', type.entityMeta, 11],
+    ['샷 보조 정보', type.shotMeta, notebookProfile ? 11 : 12],
+    ['타임라인 안내', type.timelineText, 13],
+    ['명령 입력', type.commandInput, 13],
+  ].filter(([, value, minimum]) => typeof value === 'number' && value + 0.01 < minimum);
+  if (tooSmall.length > 0) {
+    throw Object.assign(new Error(`메인 화면 글자가 최소 가독성 기준보다 작습니다: ${tooSmall.map(([label, value, minimum]) => `${label} ${value}px < ${minimum}px`).join(', ')}`), { appFailure: true, pageState: state, layout });
+  }
   const image = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   if (image?.data) await writeFile(screenshotPath, Buffer.from(image.data, 'base64'));
   cdp.close();
   report = {
     ...identity, generatedAt: new Date().toISOString(), status: 'pass', strict, platform: identity.platform, browserPath, url: smokeUrl, executionMode,
     injectedBundle, runtimeStatus: state.runtime ?? (state.safeMode ? 'unsupported' : null), safeMode: state.safeMode, title: state.title, interaction,
-    profile: notebookProfile ? 'notebook' : 'default', viewport: { width: viewportWidth, height: viewportHeight }, layout, exportReview, firstEditLayout,
+    profile: notebookProfile ? 'notebook' : 'default', viewport: { width: viewportWidth, height: viewportHeight }, layout, exportReview, exportGuide, guideHandoff, firstEditLayout,
     screenshot: `dist/${defaultScreenshotName}`, durationMs: Date.now() - startedAt.getTime(),
   };
 } catch (error) {

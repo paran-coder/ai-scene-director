@@ -68,7 +68,7 @@ export function AIExportDialog({
             <strong>AI용 내보내기</strong>
             <small>{shotName}의 장면 정보를 생성 AI가 이해하기 쉬운 자료로 변환합니다.</small>
           </div>
-          <button onClick={onClose} aria-label="AI용 내보내기 닫기">닫기</button>
+          <button className="ai-export-close" onClick={onClose} aria-label="AI용 내보내기 닫기" title="닫기">×</button>
         </header>
 
         <div className="ai-export-content">
@@ -131,15 +131,16 @@ export function AIExportDialog({
           <p className="export-local-note">외부 서버로 업로드하지 않고 현재 브라우저에서 렌더·압축합니다.</p>
         </div>
 
-        <footer>
-          <button onClick={onClose}>닫기</button>
-          {!preflight.canExport && <button className="export-fix-button" onClick={onQuickFix}>문제 수정으로 이동</button>}
-          {mode !== 'simple' && preflight.canExport && (
-            <button className="export-confirm-button" disabled={isExporting} onClick={() => onExport(mode)}>
-              {isExporting ? '생성 중…' : mode === 'image' ? '이미지 AI 자료 ZIP' : '영상 AI 자료 ZIP'}
-            </button>
-          )}
-        </footer>
+        {mode !== 'simple' && (
+          <footer>
+            {!preflight.canExport && <button className="export-fix-button" onClick={onQuickFix}>문제 수정으로 이동</button>}
+            {preflight.canExport && (
+              <button className="export-confirm-button" disabled={isExporting} onClick={() => onExport(mode)}>
+                {isExporting ? '생성 중…' : mode === 'image' ? '이미지 AI 자료 ZIP' : '영상 AI 자료 ZIP'}
+              </button>
+            )}
+          </footer>
+        )}
       </section>
     </div>
   );

@@ -42,3 +42,8 @@ npm run build
 ## UI overlap patch
 
 This package includes the first-edit guide layout patch. After deployment, create a scene and verify that the guide appears in a separate row above the viewport rather than covering the Move/Rotate/Scale toolbar.
+
+
+## 이번 수정
+
+- `UI_EXPORT_DIALOG_FIX.md`: 내보내기 팝업의 중복 닫기 제거와 글자 크기 개선 내용

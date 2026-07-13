@@ -67,9 +67,12 @@ export function AIExportGuidePage({
             <h1 id="ai-export-guide-title">내보낸 자료를 생성 AI에 적용하는 방법</h1>
             <p>내보낸 ZIP은 완성 결과물이 아니라, 장면의 구도·포즈·공간·움직임을 생성 AI가 이해하기 쉽게 정리한 입력 자료입니다.</p>
           </div>
-          <div className="guide-hero-actions">
-            <button className="guide-primary-action" onClick={() => onOpenExport('image')}>이미지 생성용 열기</button>
-            <button onClick={() => onOpenExport('video')}>영상 생성용 열기</button>
+          <div className="guide-hero-action-group">
+            <div className="guide-hero-actions">
+              <button className="guide-primary-action" onClick={() => onOpenExport('image')}>이미지용 자료 만들기</button>
+              <button onClick={() => onOpenExport('video')}>영상용 자료 만들기</button>
+            </div>
+            <small>생성 서비스로 이동하는 버튼이 아니라, 업로드할 ZIP 자료 설정을 엽니다.</small>
           </div>
         </section>
 
@@ -111,7 +114,7 @@ export function AIExportGuidePage({
               <li><code>final_prompt.txt</code>를 프롬프트에 붙여넣기</li>
               <li>지원되는 경우 Pose·Depth·Mask를 제어 입력으로 추가</li>
             </ul>
-            <button onClick={() => onOpenExport('image')}>이미지 생성용 내보내기</button>
+            <button onClick={() => onOpenExport('image')}>이미지용 ZIP 설정 열기</button>
           </article>
 
           <article>
@@ -124,7 +127,7 @@ export function AIExportGuidePage({
               <li>시작·종료를 모두 받으면 두 프레임을 함께 입력</li>
               <li><code>motion_prompt.txt</code>와 <code>camera_prompt.txt</code>를 해당 입력란에 사용</li>
             </ul>
-            <button onClick={() => onOpenExport('video')}>영상 생성용 내보내기</button>
+            <button onClick={() => onOpenExport('video')}>영상용 ZIP 설정 열기</button>
           </article>
 
           <article>
@@ -138,7 +141,7 @@ export function AIExportGuidePage({
               <li>시작·종료 프레임 ZIP</li>
               <li>필요하면 전체 AI 자료 ZIP</li>
             </ul>
-            <button onClick={() => onOpenExport('simple')}>간단 내보내기 열기</button>
+            <button onClick={() => onOpenExport('simple')}>간단 자료 선택하기</button>
           </article>
         </section>
 
@@ -189,9 +192,9 @@ export function AIExportGuidePage({
             <p>이미지는 기준 프레임과 프롬프트부터, 영상은 시작·종료 프레임과 동작 설명부터 사용하면 됩니다.</p>
           </div>
           <div>
-            <button onClick={() => onOpenExport('simple')}>간단 내보내기</button>
-            <button onClick={() => onOpenExport('image')}>이미지 생성용</button>
-            <button className="guide-primary-action" onClick={() => onOpenExport('video')}>영상 생성용</button>
+            <button onClick={() => onOpenExport('simple')}>간단 자료 선택</button>
+            <button onClick={() => onOpenExport('image')}>이미지용 ZIP 만들기</button>
+            <button className="guide-primary-action" onClick={() => onOpenExport('video')}>영상용 ZIP 만들기</button>
           </div>
         </section>
       </main>

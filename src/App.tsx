@@ -282,6 +282,7 @@ export default function App() {
   const [aiExportOpen, setAIExportOpen] = useState(false);
   const [aiExportGuideOpen, setAIExportGuideOpen] = useState(false);
   const [aiExportInitialMode, setAIExportInitialMode] = useState<AIExportMode>('image');
+  const [aiExportReturnToGuide, setAIExportReturnToGuide] = useState(false);
   const [comfyOpen, setComfyOpen] = useState(false);
   const [sceneGeneratorOpen, setSceneGeneratorOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -907,6 +908,7 @@ export default function App() {
   const performAIExport = async (mode: Exclude<AIExportMode, 'simple'>) => {
     if (!viewportRef.current || isExporting) return;
     setAIExportOpen(false);
+    setAIExportReturnToGuide(false);
     setIsExporting(true);
     recordCreatorEvent('export_started', { kind: `ai-${mode}`, shotCount: scene.shots.length });
     setExportStatus('AI용 기준 프레임 렌더링');
@@ -969,6 +971,7 @@ export default function App() {
 
   const requestAIExport = () => {
     setAIExportInitialMode('image');
+    setAIExportReturnToGuide(false);
     setAIExportOpen(true);
     recordCreatorEvent('workflow_navigated', { action: 'export-review', readiness: exportPreflight.status });
   };
@@ -1037,6 +1040,7 @@ export default function App() {
 
   const handleExportQuickFix = () => {
     setAIExportOpen(false);
+    setAIExportReturnToGuide(false);
     if (exportPreflight.quickAction === 'selectCamera') handleDirectorAction('selectShotCamera');
     else if (exportPreflight.quickAction === 'focusTimeline') handleDirectorAction('focusTimeline');
     else handleDirectorAction('openProjectDoctor');
@@ -1156,13 +1160,23 @@ export default function App() {
 
   const openAIExportGuide = () => {
     setAIExportOpen(false);
+    setAIExportReturnToGuide(false);
     setAIExportGuideOpen(true);
   };
 
   const openAIExportFromGuide = (mode: AIExportMode) => {
     setAIExportGuideOpen(false);
     setAIExportInitialMode(mode);
+    setAIExportReturnToGuide(true);
     setAIExportOpen(true);
+  };
+
+  const closeAIExport = () => {
+    setAIExportOpen(false);
+    if (aiExportReturnToGuide) {
+      setAIExportReturnToGuide(false);
+      setAIExportGuideOpen(true);
+    }
   };
 
   const selectedPose = selected?.character?.pose;
@@ -1665,7 +1679,7 @@ export default function App() {
         scenePrompt={buildShotPrompt(scene, shot)}
         motionPrompt={buildMotionPrompt(scene, shot)}
         cameraPrompt={buildCameraPrompt(scene, shot)}
-        onClose={() => setAIExportOpen(false)}
+        onClose={closeAIExport}
         onExport={(mode) => void performAIExport(mode)}
         onQuickFix={handleExportQuickFix}
         onCopyPrompt={(mode) => void copyAIExportPrompt(mode)}

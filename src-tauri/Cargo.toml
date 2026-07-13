@@ -1,6 +1,6 @@
 [package]
 name = "ai-scene-director"
-version = "1.0.0-rc.12"
+version = "1.0.0-rc.13"
 description = "Local-first AI scene and shot director"
 authors = ["AI Scene Director"]
 edition = "2021"

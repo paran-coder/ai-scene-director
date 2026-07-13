@@ -305,18 +305,31 @@ try {
   const guidePreview = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   const guidePreviewName = notebookProfile ? 'ai-export-guide-preview-notebook.png' : 'ai-export-guide-preview.png';
   await writeFile(new URL(`../dist/${guidePreviewName}`, import.meta.url), Buffer.from(guidePreview.data, 'base64'));
-  await cdp.send('Runtime.evaluate', { expression: `Array.from(document.querySelectorAll('.ai-export-guide-page button')).find((button) => button.textContent?.trim() === '영상 생성용 내보내기')?.click()` });
+  await cdp.send('Runtime.evaluate', { expression: `Array.from(document.querySelectorAll('.ai-export-guide-page button')).find((button) => button.textContent?.trim() === '영상용 자료 만들기')?.click()` });
   await new Promise((resolve) => setTimeout(resolve, 180));
   const guideHandoffResult = await cdp.send('Runtime.evaluate', {
-    expression: `(() => { const dialog = document.querySelector('[role="dialog"][aria-label="AI용 내보내기"]'); const active = dialog?.querySelector('.ai-export-mode-grid > button.active'); return { dialogOpen: Boolean(dialog), activeMode: active?.textContent ?? '' }; })()`,
+    expression: `(() => { const dialog = document.querySelector('[role="dialog"][aria-label="AI용 내보내기"]'); const active = dialog?.querySelector('.ai-export-mode-grid > button.active'); const text = dialog?.innerText ?? ''; return { dialogOpen: Boolean(dialog), activeMode: active?.textContent ?? '', clearTitle: text.includes('영상 생성용 자료 만들기'), explainsDownload: text.includes('영상 생성 사이트로 이동하지 않습니다') && text.includes('ZIP') }; })()`,
     returnByValue: true,
   });
   const guideHandoff = guideHandoffResult?.result?.value;
-  if (!guideHandoff?.dialogOpen || !String(guideHandoff.activeMode).includes('영상 생성용')) {
+  if (!guideHandoff?.dialogOpen || !String(guideHandoff.activeMode).includes('영상 생성용') || !guideHandoff.clearTitle || !guideHandoff.explainsDownload) {
     throw Object.assign(new Error('사용법 페이지에서 영상 내보내기 화면으로 이동하지 못했습니다.'), { appFailure: true, pageState: state, guideHandoff });
   }
+  const videoHandoffPreview = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+  const videoHandoffPreviewName = notebookProfile ? 'video-export-handoff-preview-notebook.png' : 'video-export-handoff-preview.png';
+  await writeFile(new URL(`../dist/${videoHandoffPreviewName}`, import.meta.url), Buffer.from(videoHandoffPreview.data, 'base64'));
   await cdp.send('Runtime.evaluate', { expression: `document.querySelector('.ai-export-close')?.click()` });
   await new Promise((resolve) => setTimeout(resolve, 120));
+  const guideReturnResult = await cdp.send('Runtime.evaluate', {
+    expression: `(() => { const guide = document.querySelector('[role="dialog"][aria-labelledby="ai-export-guide-title"]'); return { reopened: Boolean(guide), text: guide?.innerText ?? '' }; })()`,
+    returnByValue: true,
+  });
+  const guideReturn = guideReturnResult?.result?.value;
+  if (!guideReturn?.reopened || !String(guideReturn.text).includes('내보낸 자료를 생성 AI에 적용하는 방법')) {
+    throw Object.assign(new Error('사용법에서 연 내보내기 설정을 닫았을 때 사용법 페이지로 돌아오지 못했습니다.'), { appFailure: true, pageState: state, guideReturn });
+  }
+  await cdp.send('Runtime.evaluate', { expression: `document.querySelector('.ai-export-guide-close')?.click()` });
+  await new Promise((resolve) => setTimeout(resolve, 100));
 
   // Mount the same first-edit guide markup as a workspace child and verify its real browser geometry.
   const firstEditLayoutResult = await cdp.send('Runtime.evaluate', {
@@ -418,7 +431,7 @@ try {
   report = {
     ...identity, generatedAt: new Date().toISOString(), status: 'pass', strict, platform: identity.platform, browserPath, url: smokeUrl, executionMode,
     injectedBundle, runtimeStatus: state.runtime ?? (state.safeMode ? 'unsupported' : null), safeMode: state.safeMode, title: state.title, interaction,
-    profile: notebookProfile ? 'notebook' : 'default', viewport: { width: viewportWidth, height: viewportHeight }, layout, exportReview, exportGuide, guideHandoff, firstEditLayout,
+    profile: notebookProfile ? 'notebook' : 'default', viewport: { width: viewportWidth, height: viewportHeight }, layout, exportReview, exportGuide, guideHandoff, guideReturn, firstEditLayout,
     screenshot: `dist/${defaultScreenshotName}`, durationMs: Date.now() - startedAt.getTime(),
   };
 } catch (error) {

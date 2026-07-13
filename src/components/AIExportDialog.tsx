@@ -62,6 +62,16 @@ export function AIExportDialog({
     ? `${scenePrompt}\n\n[동작]\n${motionPrompt}\n\n[카메라]\n${cameraPrompt}`
     : `${scenePrompt}\n\n[카메라]\n${cameraPrompt}`;
   const renderCount = mode === 'image' ? 4 : mode === 'video' ? 8 : 1;
+  const dialogTitle = mode === 'image'
+    ? '이미지 생성용 자료 만들기'
+    : mode === 'video'
+      ? '영상 생성용 자료 만들기'
+      : '간단 자료 내보내기';
+  const dialogDescription = mode === 'video'
+    ? `${shotName}을 영상 생성 AI에 업로드할 시작·종료 프레임과 프롬프트 ZIP으로 만듭니다.`
+    : mode === 'image'
+      ? `${shotName}을 이미지 생성 AI에 업로드할 기준 이미지와 제어 자료 ZIP으로 만듭니다.`
+      : `${shotName}에서 필요한 프롬프트와 이미지만 선택해 저장합니다.`;
 
   return (
     <div className="modal-backdrop ai-export-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -69,8 +79,8 @@ export function AIExportDialog({
         <header className="modal-header ai-export-header">
           <div>
             <span className={`export-preflight-badge ${preflight.status}`}>{preflight.title}</span>
-            <strong>AI용 내보내기</strong>
-            <small>{shotName}의 장면 정보를 생성 AI가 이해하기 쉬운 자료로 변환합니다.</small>
+            <strong>{dialogTitle}</strong>
+            <small>{dialogDescription}</small>
           </div>
           <div className="ai-export-header-actions">
             <button className="ai-export-guide-link" onClick={onOpenGuide}>내보낸 자료 사용법</button>
@@ -88,6 +98,11 @@ export function AIExportDialog({
               </button>
             ))}
           </section>
+
+          <div className="export-next-step">
+            <b>여기서 하는 일</b>
+            <span>{mode === 'video' ? '영상 생성 사이트로 이동하지 않습니다. start_frame.png·end_frame.png와 프롬프트가 담긴 ZIP을 만드는 단계입니다.' : mode === 'image' ? '이미지 생성 사이트로 이동하지 않습니다. reference.png와 프롬프트·제어 이미지가 담긴 ZIP을 만드는 단계입니다.' : '선택한 프롬프트 또는 이미지를 현재 브라우저에서 바로 저장합니다.'}</span>
+          </div>
 
           <div className="ai-export-summary-grid">
             <div><span>현재 샷</span><b>{shotName}</b></div>
@@ -143,7 +158,7 @@ export function AIExportDialog({
             {!preflight.canExport && <button className="export-fix-button" onClick={onQuickFix}>문제 수정으로 이동</button>}
             {preflight.canExport && (
               <button className="export-confirm-button" disabled={isExporting} onClick={() => onExport(mode)}>
-                {isExporting ? '생성 중…' : mode === 'image' ? '이미지 AI 자료 ZIP' : '영상 AI 자료 ZIP'}
+                {isExporting ? '생성 중…' : mode === 'image' ? '이미지 AI 자료 ZIP 만들기' : '영상 AI 자료 ZIP 만들기'}
               </button>
             )}
           </footer>

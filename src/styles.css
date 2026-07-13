@@ -585,7 +585,7 @@ button.primary-export { border-color: #0e7490; background: #164e63; color: #cffa
   .first-edit-guide { gap: 10px; }
 }
 
-/* 1.0 RC12 command search and local creator session insights */
+/* 1.0 RC13 command search and local creator session insights */
 .command-search-button { display: inline-flex; align-items: center; gap: 7px; }
 kbd { display: inline-flex; align-items: center; min-height: 20px; padding: 1px 6px; border: 1px solid #57534e; border-bottom-width: 2px; border-radius: 5px; background: #1c1917; color: #d6d3d1; font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
 .command-palette-backdrop { z-index: 140; align-items: start; padding-top: min(16vh, 140px); }
@@ -638,7 +638,7 @@ kbd { display: inline-flex; align-items: center; min-height: 20px; padding: 1px 
   .navigation-hint { max-width: calc(100% - 24px); white-space: normal; }
 }
 
-/* RC12 UI polish — structured dark editor using the supplied visual reference */
+/* RC13 UI polish — structured dark editor using the supplied visual reference */
 :root {
   --ui-canvas: #0b0e11;
   --ui-canvas-soft: #101318;
@@ -1004,7 +1004,7 @@ button.danger { color: var(--ui-danger); }
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }
 
-/* RC12 production stabilization — export preflight and notebook workspace */
+/* RC13 production stabilization — export preflight and notebook workspace */
 .shot-export-backdrop { z-index: 150; }
 .shot-export-review {
   width: min(760px, calc(100vw - 32px));
@@ -1040,7 +1040,10 @@ button.danger { color: var(--ui-danger); }
 .export-file-plan article { padding: 11px 12px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); background: var(--ui-canvas-soft); }
 .export-file-plan strong { color: var(--ui-primary); font-size: 11px; }
 .export-file-plan ul { margin: 7px 0 0; padding-left: 17px; color: var(--ui-muted); font-size: 11px; line-height: 1.55; }
-.export-local-note { margin: 15px 0 0; color: var(--ui-muted-soft); font-size: 12px; line-height: 1.5; }
+.export-next-step { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; margin-top: 14px; padding: 11px 12px; border: 1px solid rgba(252,213,53,.28); border-radius: var(--ui-radius-lg); background: rgba(252,213,53,.055); }
+.export-next-step b { color: var(--ui-primary); font-size: 12px; line-height: 1.5; white-space: nowrap; }
+.export-next-step span { color: var(--ui-muted); font-size: 13px; line-height: 1.55; }
+.export-local-note { margin: 10px 0 0; color: var(--ui-muted-soft); font-size: 12px; line-height: 1.5; }
 .shot-export-review > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--ui-border); background: var(--ui-canvas-soft); }
 .shot-export-review > footer button { min-height: 38px; }
 .export-confirm-button { border-color: var(--ui-primary); background: var(--ui-primary); color: var(--ui-on-primary); font-weight: 700; }
@@ -1109,7 +1112,7 @@ button.danger { color: var(--ui-danger); }
 }
 @media (max-height: 820px) { .runtime-warning { top: 64px; padding-block: 7px; } }
 
-/* RC12 product flow — create, edit, export. Advanced functions stay secondary. */
+/* RC13 product flow — create, edit, export. Advanced functions stay secondary. */
 .product-flow-actions {
   display: flex;
   align-items: center;
@@ -1260,7 +1263,7 @@ button.danger { color: var(--ui-danger); }
 .director-stages.macro { grid-template-columns: repeat(3, minmax(150px, 1fr)); }
 .director-stages.macro .director-stage { min-height: 46px; }
 
-/* RC12 main-screen typography readability pass.
+/* RC13 main-screen typography readability pass.
    Preserve the compact editor layout while preventing critical UI copy from falling below 11px. */
 :root {
   --ui-type-title: 15px;
@@ -1401,6 +1404,8 @@ button, select, input, textarea { font-size: var(--ui-type-control); line-height
 }
 .ai-export-guide-hero h1 { max-width: 760px; margin: 10px 0 12px; color: var(--ui-text-strong); font-size: clamp(28px, 3vw, 42px); line-height: 1.16; letter-spacing: -.03em; }
 .ai-export-guide-hero p { max-width: 760px; margin: 0; color: var(--ui-muted); font-size: 15px; line-height: 1.65; }
+.guide-hero-action-group { display: grid; justify-items: end; gap: 8px; }
+.guide-hero-action-group > small { max-width: 350px; color: var(--ui-muted-soft); font-size: 12px; line-height: 1.5; text-align: right; }
 .guide-hero-actions { display: flex; gap: 8px; }
 .guide-hero-actions button, .guide-final-cta button, .guide-purpose-grid article > button {
   min-height: 42px;
@@ -1490,6 +1495,8 @@ button, select, input, textarea { font-size: var(--ui-type-control); line-height
 
 @media (max-width: 1040px) {
   .ai-export-guide-hero { grid-template-columns: 1fr; align-items: start; }
+  .guide-hero-action-group { justify-items: start; }
+  .guide-hero-action-group > small { text-align: left; }
   .guide-hero-actions { justify-content: flex-start; }
   .guide-purpose-grid { grid-template-columns: 1fr; }
   .guide-purpose-grid p { min-height: auto; }

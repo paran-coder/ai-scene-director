@@ -458,11 +458,11 @@ button.primary-export { border-color: #0e7490; background: #164e63; color: #cffa
 .viewport-unavailable button { margin-top: 12px; }
 
 /* 1.0 RC4 creator workflow realignment */
-.workspace { grid-template-rows: auto minmax(0, 1fr); }
+.workspace { grid-template-rows: auto auto minmax(0, 1fr); }
 .director-workflow { grid-column: 1 / -1; grid-row: 1; min-height: 104px; display: grid; grid-template-columns: 210px minmax(0, 1fr) 300px; gap: 14px; align-items: stretch; padding: 10px 14px; border-bottom: 1px solid #34312f; background: linear-gradient(90deg, #172019, #171412 52%, #1b1715); }
-.hierarchy { grid-column: 1; grid-row: 2; }
-.viewport { grid-column: 2; grid-row: 2; }
-.inspector { grid-column: 3; grid-row: 2; }
+.hierarchy { grid-column: 1; grid-row: 3; }
+.viewport { grid-column: 2; grid-row: 3; }
+.inspector { grid-column: 3; grid-row: 3; }
 .director-overview { display: flex; align-items: center; gap: 11px; min-width: 0; padding: 8px 10px; border: 1px solid #334034; border-radius: 10px; background: rgba(20, 31, 23, .8); }
 .director-overview > div:last-child { min-width: 0; display: grid; gap: 3px; }
 .director-overview strong { color: #f5f5f4; font-size: 13px; }
@@ -500,6 +500,7 @@ button.primary-export { border-color: #0e7490; background: #164e63; color: #cffa
 }
 
 /* 1.0 RC5 creator-flow focus and first-edit acceleration */
+/* The first-edit guide is a workspace grid row, never a viewport overlay. */
 .director-workflow.collapsed {
   min-height: 58px;
   grid-template-columns: 170px minmax(0, 1fr) auto auto;
@@ -533,27 +534,29 @@ button.primary-export { border-color: #0e7490; background: #164e63; color: #cffa
 .director-stage:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
 
 .first-edit-guide {
-  position: fixed;
-  z-index: 45;
-  left: 50%;
-  top: 70px;
-  width: min(780px, calc(100vw - 40px));
-  transform: translateX(-50%);
+  position: relative;
+  z-index: 5;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  width: auto;
+  min-height: 50px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
-  padding: 11px 13px;
+  padding: 9px 14px;
   border: 1px solid #0e7490;
-  border-radius: 11px;
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
   background: rgba(8, 47, 73, .96);
-  box-shadow: 0 16px 45px rgba(0,0,0,.45);
+  box-shadow: 0 10px 28px rgba(0,0,0,.24);
 }
 .first-edit-guide > div:first-child { min-width: 0; display: grid; gap: 2px; }
 .first-edit-guide span { color: #67e8f9; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
 .first-edit-guide strong { overflow: hidden; color: #ecfeff; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .first-edit-guide small { overflow: hidden; color: #bae6fd; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.first-edit-actions { display: flex; gap: 6px; }
+.first-edit-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .first-edit-actions button { padding: 7px 9px; border-color: #0891b2; background: #155e75; color: #ecfeff; font-size: 10px; white-space: nowrap; }
 .first-edit-actions .guide-close { border-color: #475569; background: #1e293b; color: #cbd5e1; }
 
@@ -579,7 +582,7 @@ button.primary-export { border-color: #0e7490; background: #164e63; color: #cffa
   .director-overview .director-view-controls { flex-direction: column; }
   .director-stage { padding: 5px; }
   .director-stage span { font-size: 9px; }
-  .first-edit-guide { width: min(700px, calc(100vw - 30px)); }
+  .first-edit-guide { gap: 10px; }
 }
 
 /* 1.0 RC11 command search and local creator session insights */
@@ -904,7 +907,6 @@ button.danger { color: var(--ui-danger); }
 .director-compact-next span, .director-compact-next small { color: var(--ui-muted); }
 .director-view-controls button { background: transparent; }
 .first-edit-guide {
-  top: 76px;
   border-color: rgba(252,213,53,.48);
   background: rgba(30,35,41,.97);
   box-shadow: 0 18px 56px rgba(0,0,0,.44);
@@ -1058,7 +1060,8 @@ button.danger { color: var(--ui-danger); }
   .timeline-panel { grid-template-rows: 32px 36px minmax(0, 1fr); padding: 5px 10px; }
   .timeline-controls button, .action-create button { padding-block: 5px; }
   .command-bar { padding: 7px 10px; }
-  .first-edit-guide { top: 62px; padding-block: 8px; }
+  .first-edit-guide { min-height: 44px; padding-block: 6px; }
+  .first-edit-guide small { display: none; }
 }
 
 @media (max-width: 1399px) {

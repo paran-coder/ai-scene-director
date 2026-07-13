@@ -122,7 +122,7 @@ async function installInjectedApp(cdp) {
       };
     };
     const local = createStorage();
-    local.setItem('ai-scene-director-onboarding-front-view-v1', 'done');
+    local.setItem('ai-scene-director-onboarding-ai-export-v2', 'done');
     Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: local });
     Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: createStorage() });
     globalThis.__AISD_SMOKE_INJECTED__ = true;
@@ -268,6 +268,49 @@ try {
   await writeFile(new URL(`../dist/${exportPreviewName}`, import.meta.url), Buffer.from(exportPreview.data, 'base64'));
   await cdp.send('Runtime.evaluate', { expression: `document.querySelector('[role="dialog"][aria-label="AI용 내보내기"] .modal-header button')?.click()` });
   await new Promise((resolve) => setTimeout(resolve, 120));
+
+  // Mount the same first-edit guide markup as a workspace child and verify its real browser geometry.
+  const firstEditLayoutResult = await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const workspace = document.querySelector('.workspace');
+      let guide = document.querySelector('.first-edit-guide');
+      let synthetic = false;
+      if (!guide && workspace) {
+        synthetic = true;
+        guide = document.createElement('section');
+        guide.className = 'first-edit-guide';
+        guide.setAttribute('data-smoke-guide', 'true');
+        guide.innerHTML = '<div><span>장면 생성 완료 · 첫 수정 준비</span><strong>피사체 위치·포즈 수정</strong><small>주인공을 선택하고 이동 도구로 배치를 조정하세요.</small></div><div class="first-edit-actions"><button>주인공 수정</button><button>카메라 구도</button><button>첫 동작</button><button class="guide-close">닫기</button></div>';
+        workspace.insertBefore(guide, workspace.children[1] ?? null);
+      }
+      let toolbar = document.querySelector('.viewport-toolbar');
+      if (!toolbar) {
+        const viewport = document.querySelector('.viewport');
+        if (viewport) {
+          toolbar = document.createElement('div');
+          toolbar.className = 'viewport-toolbar';
+          toolbar.setAttribute('data-smoke-toolbar', 'true');
+          toolbar.innerHTML = '<button class="active">이동</button><button>회전</button><button>크기</button>';
+          viewport.appendChild(toolbar);
+        }
+      }
+      const rect = (node) => { if (!node) return null; const value = node.getBoundingClientRect(); return { top: value.top, left: value.left, right: value.right, bottom: value.bottom, width: value.width, height: value.height }; };
+      const guideRect = rect(guide);
+      const toolbarRect = rect(toolbar);
+      const overlap = Boolean(guideRect && toolbarRect && guideRect.left < toolbarRect.right && guideRect.right > toolbarRect.left && guideRect.top < toolbarRect.bottom && guideRect.bottom > toolbarRect.top);
+      const style = guide ? getComputedStyle(guide) : null;
+      return { guideVisible: Boolean(guide), synthetic, guideRect, toolbarRect, overlap, position: style?.position ?? null, gridRow: style?.gridRowStart ?? null };
+    })()`,
+    returnByValue: true,
+  });
+  const firstEditLayout = firstEditLayoutResult?.result?.value;
+  if (!firstEditLayout?.guideVisible || firstEditLayout.overlap) {
+    throw Object.assign(new Error('첫 수정 안내가 표시되지 않았거나 뷰포트 툴바와 겹칩니다.'), { appFailure: true, pageState: state, firstEditLayout });
+  }
+  const firstEditPreview = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+  const firstEditPreviewName = notebookProfile ? 'first-edit-guide-notebook.png' : 'first-edit-guide.png';
+  await writeFile(new URL(`../dist/${firstEditPreviewName}`, import.meta.url), Buffer.from(firstEditPreview.data, 'base64'));
+
   const layoutResult = await cdp.send('Runtime.evaluate', {
     expression: `(() => {
       const rect = (selector) => { const node = document.querySelector(selector); if (!node) return null; const value = node.getBoundingClientRect(); return { top: value.top, left: value.left, right: value.right, bottom: value.bottom, width: value.width, height: value.height }; };
@@ -302,7 +345,7 @@ try {
   report = {
     ...identity, generatedAt: new Date().toISOString(), status: 'pass', strict, platform: identity.platform, browserPath, url: smokeUrl, executionMode,
     injectedBundle, runtimeStatus: state.runtime ?? (state.safeMode ? 'unsupported' : null), safeMode: state.safeMode, title: state.title, interaction,
-    profile: notebookProfile ? 'notebook' : 'default', viewport: { width: viewportWidth, height: viewportHeight }, layout, exportReview,
+    profile: notebookProfile ? 'notebook' : 'default', viewport: { width: viewportWidth, height: viewportHeight }, layout, exportReview, firstEditLayout,
     screenshot: `dist/${defaultScreenshotName}`, durationMs: Date.now() - startedAt.getTime(),
   };
 } catch (error) {

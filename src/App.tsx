@@ -1217,7 +1217,7 @@ export default function App() {
       <section className="workspace">
         <DirectorWorkflowPanel report={directorReport} activeShotName={shot.name} collapsed={workflowCollapsed || focusMode} focusMode={focusMode} onAction={handleDirectorAction} onToggleCollapsed={() => setWorkflowCollapsed((value) => !value)} onToggleFocus={() => setFocusMode((value) => !value)} />
         {firstEditGuideOpen && (
-          <section className="first-edit-guide" data-first-edit-ready={directorReport.journey.firstEdit.ready}>
+          <section className="first-edit-guide" role="status" aria-label="첫 수정 안내" data-first-edit-ready={directorReport.journey.firstEdit.ready}>
             <div>
               <span>장면 생성 완료 · 첫 수정 준비</span>
               <strong>{directorReport.journey.firstEdit.label}</strong>

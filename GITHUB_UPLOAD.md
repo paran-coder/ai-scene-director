@@ -2,8 +2,6 @@
 
 이 패키지는 GitHub 웹 업로드 100개 제한 안에 맞춘 소스 배포본입니다.
 
-- 실제 업로드 파일 수: **93개**
-
 ## 업로드
 
 1. ZIP을 압축 해제합니다.
@@ -40,3 +38,7 @@ npm ci
 npm test
 npm run build
 ```
+
+## UI overlap patch
+
+This package includes the first-edit guide layout patch. After deployment, create a scene and verify that the guide appears in a separate row above the viewport rather than covering the Move/Rotate/Scale toolbar.

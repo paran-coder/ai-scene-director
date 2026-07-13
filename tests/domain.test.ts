@@ -1861,3 +1861,14 @@ test('항상 접근 가능한 사용법과 정면 맞춤 UI를 제공한다', ()
   assert.match(onboardingSource, /왼쪽 드래그: 시점 회전/);
   assert.match(onboardingSource, /AI 씬 생성으로 시작/);
 });
+
+test('UI polish는 핵심 작업 위계와 단일 노란색 강조 토큰을 제공한다', () => {
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const styleSource = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+  assert.match(appSource, /className="brand-mark"/);
+  assert.match(appSource, /className="header-menu tools-menu"/);
+  assert.match(appSource, /className="header-menu project-menu"/);
+  assert.match(styleSource, /--ui-primary:\s*#fcd535/i);
+  assert.match(styleSource, /--ui-canvas:\s*#0b0e11/i);
+  assert.match(styleSource, /prefers-reduced-motion/);
+});

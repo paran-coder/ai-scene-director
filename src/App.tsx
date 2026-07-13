@@ -1056,37 +1056,58 @@ export default function App() {
 
   return (
     <main className={`app-shell ${focusMode ? 'focus-mode' : ''}`} data-aisd-ready="true" data-runtime-status={runtimeDiagnostics?.status ?? 'checking'}>
-      <header>
-        <div>
-          <strong>{project.name}</strong>
-          <span>revision {project.revision}</span>
-          <span>schema {project.schemaVersion}</span>
-          <span>{autoSaveStatus}</span>
-          <span className={`runtime-status ${runtimeDiagnostics?.status ?? 'checking'}`}>환경 {runtimeDiagnostics?.score ?? '…'} · {effectiveRenderQuality}</span>
-          {workspaceLabel && <span title={workspaceLabel}>폴더: {workspaceLabel.split(/[\\/]/).pop()}</span>}
+      <header className="app-header">
+        <div className="brand-cluster">
+          <div className="brand-mark" aria-hidden="true">AS</div>
+          <div className="project-identity">
+            <strong>{project.name}</strong>
+            <span>AI Scene Director</span>
+          </div>
+          <div className="header-statuses" aria-label="프로젝트 상태">
+            <span className="status-chip">r{project.revision}</span>
+            <span className="status-chip">schema {project.schemaVersion}</span>
+            <span className="status-chip autosave">{autoSaveStatus}</span>
+            <span className={`status-chip runtime-status ${runtimeDiagnostics?.status ?? 'checking'}`}>환경 {runtimeDiagnostics?.score ?? '…'} · {effectiveRenderQuality}</span>
+            {workspaceLabel && <span className="status-chip" title={workspaceLabel}>폴더 {workspaceLabel.split(/[\\/]/).pop()}</span>}
+          </div>
         </div>
-        <nav>
-          <button className="focus-essential" onClick={undo} disabled={!undoCount}>실행 취소</button>
-          <button className="focus-essential" onClick={redo} disabled={!redoCount}>다시 실행</button>
-          <button className="command-search-button focus-essential" onClick={openCommandPalette}>명령 검색 <kbd>⌘K</kbd></button>
+        <nav className="header-actions" aria-label="주요 작업">
+          <div className="history-actions" aria-label="실행 기록">
+            <button className="compact-action focus-essential" title="실행 취소 (Ctrl/Cmd+Z)" onClick={undo} disabled={!undoCount}><span aria-hidden="true">↶</span><b>취소</b></button>
+            <button className="compact-action focus-essential" title="다시 실행 (Ctrl/Cmd+Shift+Z)" onClick={redo} disabled={!redoCount}><span aria-hidden="true">↷</span><b>다시</b></button>
+          </div>
+          <button className="command-search-button focus-essential" onClick={openCommandPalette}><span>명령 검색</span><kbd>⌘K</kbd></button>
           <button className="scene-generator-button focus-essential" onClick={() => executeCommand('openSceneGenerator')}>AI 씬 생성</button>
-          <button className="primary-export focus-essential" disabled={isExporting} onClick={exportShotPackage}>{isExporting ? '패키지 생성 중…' : 'Shot Package'}</button>
-          <button className="comfy-button" onClick={() => setComfyOpen(true)}>ComfyUI</button>
-          <button onClick={connectWorkspace}>{workspaceLabel ? '폴더 변경' : '프로젝트 폴더'}</button>
-          <button disabled={!workspaceLabel || isExporting} onClick={saveWorkspaceBundle}>폴더에 저장</button>
-          <button disabled={!recoveryCount} onClick={restoreLatestRecovery}>최근 복구 ({recoveryCount})</button>
-          <button onClick={() => void cleanupLocalAssets()}>저장소 정리</button>
-          <button onClick={() => setDoctorOpen(true)}>프로젝트 점검</button>
+          <button className="primary-export focus-essential" disabled={isExporting} onClick={exportShotPackage}>{isExporting ? '생성 중…' : '샷 패키지'}</button>
           <button className="usage-button focus-essential" title="처음부터 따라 하는 6단계 사용법" onClick={() => setOnboardingOpen(true)}>사용법</button>
-          <button onClick={() => setSessionInsightsOpen(true)}>세션 기록</button>
-          <button className="focus-essential focus-toggle" onClick={() => setFocusMode((value) => !value)}>{focusMode ? '집중 종료' : '집중 모드'}</button>
-          <button className="bundle-button" disabled={isExporting} onClick={exportProjectBundle}>프로젝트 번들</button>
-          <button onClick={() => bundleInputRef.current?.click()}>번들 불러오기</button>
-          <input ref={bundleInputRef} className="file-input" type="file" accept=".zip,.aiscene.zip,application/zip" onChange={(event) => importBundleFile(event.target.files?.[0])} />
-          <button onClick={() => downloadProject(project)}>JSON 내보내기</button>
-          <button onClick={() => fileInputRef.current?.click()}>JSON 불러오기</button>
-          <input ref={fileInputRef} className="file-input" type="file" accept=".json,.aiscene.json" onChange={(event) => importFile(event.target.files?.[0])} />
-          <button onClick={reset}>샘플 초기화</button>
+          <details className="header-menu tools-menu">
+            <summary>도구</summary>
+            <div className="header-popover">
+              <span className="menu-label">편집 도구</span>
+              <button className="comfy-button" onClick={() => setComfyOpen(true)}>ComfyUI 연결</button>
+              <button onClick={() => setDoctorOpen(true)}>프로젝트 점검</button>
+              <button onClick={() => setSessionInsightsOpen(true)}>세션 기록</button>
+              <button className="focus-toggle" onClick={() => setFocusMode((value) => !value)}>{focusMode ? '집중 모드 종료' : '집중 모드'}</button>
+              <button onClick={() => void cleanupLocalAssets()}>저장소 정리</button>
+            </div>
+          </details>
+          <details className="header-menu project-menu">
+            <summary>프로젝트</summary>
+            <div className="header-popover wide">
+              <span className="menu-label">저장·불러오기</span>
+              <button onClick={connectWorkspace}>{workspaceLabel ? '프로젝트 폴더 변경' : '프로젝트 폴더 연결'}</button>
+              <button disabled={!workspaceLabel || isExporting} onClick={saveWorkspaceBundle}>연결 폴더에 저장</button>
+              <button disabled={!recoveryCount} onClick={restoreLatestRecovery}>최근 복구본 ({recoveryCount})</button>
+              <button className="bundle-button" disabled={isExporting} onClick={exportProjectBundle}>프로젝트 번들 내보내기</button>
+              <button onClick={() => bundleInputRef.current?.click()}>프로젝트 번들 불러오기</button>
+              <input ref={bundleInputRef} className="file-input" type="file" accept=".zip,.aiscene.zip,application/zip" onChange={(event) => importBundleFile(event.target.files?.[0])} />
+              <div className="menu-divider" />
+              <button onClick={() => downloadProject(project)}>JSON 내보내기</button>
+              <button onClick={() => fileInputRef.current?.click()}>JSON 불러오기</button>
+              <input ref={fileInputRef} className="file-input" type="file" accept=".json,.aiscene.json" onChange={(event) => importFile(event.target.files?.[0])} />
+              <button className="danger" onClick={reset}>샘플 초기화</button>
+            </div>
+          </details>
         </nav>
       </header>
 

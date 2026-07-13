@@ -1,6 +1,6 @@
 import { evaluateActions } from './actions.ts';
 import { applyRelationships } from './relationships.ts';
-import type { Entity, PoseState, Scene, Shot, ShotOverride } from './types.ts';
+import type { CameraData, Entity, LightData, PoseState, Scene, Shot, ShotOverride } from './types.ts';
 
 function cloneEntity(entity: Entity): Entity {
   return structuredClone(entity);
@@ -22,6 +22,12 @@ function applyOverride(entity: Entity, override: ShotOverride): void {
       return;
     case 'character.pose':
       if (entity.character) entity.character.pose = structuredClone(override.value as PoseState);
+      return;
+    case 'camera.settings':
+      if (entity.type === 'camera') entity.camera = structuredClone(override.value as CameraData);
+      return;
+    case 'light.settings':
+      if (entity.type === 'light') entity.light = structuredClone(override.value as LightData);
   }
 }
 

@@ -53,6 +53,40 @@ export interface CharacterData {
 export type AssetPrimitive = 'box' | 'cylinder' | 'sphere' | 'plane';
 export type AssetCategory = 'environment' | 'architecture' | 'furniture' | 'handheld' | 'vehicle' | 'decor' | 'lighting' | 'generic';
 
+export interface CameraData {
+  projection: 'perspective';
+  fov: number;
+  near: number;
+  far: number;
+  aspectRatio: '16:9' | '9:16' | '1:1' | '4:3';
+  showSafeFrame: boolean;
+}
+
+export interface LightData {
+  kind: 'directional' | 'point' | 'spot' | 'ambient';
+  color: string;
+  intensity: number;
+  range: number;
+  angle: number;
+  castShadow: boolean;
+  /** Optional scene entity used as the aim target for spot lights. */
+  targetEntityId?: string;
+}
+
+export interface ReferenceImage {
+  id: string;
+  name: string;
+  storageKey: string;
+  /** Legacy inline preview retained only while migrating old projects. */
+  dataUrl?: string;
+  mimeType: string;
+  sizeBytes: number;
+  opacity: number;
+  visible: boolean;
+  cameraEntityId?: string;
+  fit: 'contain' | 'cover';
+}
+
 export interface EntityAssetData {
   presetId?: string;
   modelAssetId?: string;
@@ -67,6 +101,42 @@ export interface EntityAssetData {
 
 export type AssetLibraryKind = 'glb';
 export type AssetLibraryCategory = 'character' | 'prop' | 'environment';
+export type RigStatus = 'humanoid' | 'partial' | 'none';
+
+export interface HumanoidArmProportions {
+  shoulderOffset: Vec3;
+  upperLength: number;
+  lowerLength: number;
+}
+
+export interface HumanoidLegProportions {
+  hipOffset: Vec3;
+  upperLength: number;
+  lowerLength: number;
+  footLength: number;
+}
+
+export interface HumanoidRigProportions {
+  referenceHeight: number;
+  pelvisHeight: number;
+  leftArm: HumanoidArmProportions;
+  rightArm: HumanoidArmProportions;
+  leftLeg: HumanoidLegProportions;
+  rightLeg: HumanoidLegProportions;
+}
+
+export interface HumanoidRigProfile {
+  status: RigStatus;
+  detectedPreset: 'mixamo' | 'vrm' | 'generic' | 'none';
+  skeletonCount: number;
+  nodeNames: string[];
+  boneMap: Partial<Record<JointName, string>>;
+  axisCorrections: Partial<Record<JointName, Vec3>>;
+  proportions?: HumanoidRigProportions;
+  mappedJointCount: number;
+  missingJoints: JointName[];
+  animationClips: string[];
+}
 
 export interface AssetLibraryItem {
   id: string;
@@ -78,6 +148,7 @@ export interface AssetLibraryItem {
   storageKey: string;
   createdAt: string;
   originalFilename: string;
+  rig?: HumanoidRigProfile;
 }
 
 export type EntityType = 'character' | 'prop' | 'camera' | 'light';
@@ -91,6 +162,8 @@ export interface Entity {
   locked: boolean;
   character?: CharacterData;
   asset?: EntityAssetData;
+  camera?: CameraData;
+  light?: LightData;
 }
 
 export type OverridePath =
@@ -98,9 +171,11 @@ export type OverridePath =
   | 'transform.rotation'
   | 'transform.scale'
   | 'visible'
-  | 'character.pose';
+  | 'character.pose'
+  | 'camera.settings'
+  | 'light.settings';
 
-export type OverrideValue = Vec3 | boolean | PoseState;
+export type OverrideValue = Vec3 | boolean | PoseState | CameraData | LightData;
 
 export interface ShotOverride {
   id: string;
@@ -144,6 +219,11 @@ export interface ActionParameters {
   hand?: HandSide;
   surfaceEntityId?: string;
   clockwise?: boolean;
+  /** Procedural gait tuning used by walk actions. */
+  strideLength?: number;
+  stepHeight?: number;
+  cadence?: number;
+  bodyLean?: number;
 }
 
 export interface ActionBlock {
@@ -206,6 +286,7 @@ export interface Scene {
   environment: SceneEnvironment;
   entities: Entity[];
   shots: Shot[];
+  referenceImages: ReferenceImage[];
 }
 
 export interface Project {
@@ -241,6 +322,12 @@ export interface RemoveEntityOperation {
   overridesByShot: Record<string, ShotOverride[]>;
   relationshipsByShot: Record<string, Relationship[]>;
   actionsByShot: Record<string, ActionBlock[]>;
+  referenceImages: ReferenceImage[];
+  lightTargetBackups?: Array<{
+    lightEntityId: string;
+    baseLight?: LightData;
+    overridesByShot: Record<string, ShotOverride[]>;
+  }>;
 }
 
 export interface UpdateBaseEntityOperation {
@@ -250,6 +337,35 @@ export interface UpdateBaseEntityOperation {
   path: 'name' | 'visible' | 'locked';
   previousValue: string | boolean;
   nextValue: string | boolean;
+}
+
+
+export interface UpdateEntityDataOperation {
+  type: 'updateEntityData';
+  sceneId: string;
+  entityId: string;
+  field: 'camera' | 'light';
+  previousValue?: CameraData | LightData;
+  nextValue?: CameraData | LightData;
+}
+
+export interface AddReferenceImageOperation {
+  type: 'addReferenceImage';
+  sceneId: string;
+  image: ReferenceImage;
+}
+
+export interface UpdateReferenceImageOperation {
+  type: 'updateReferenceImage';
+  sceneId: string;
+  previousImage: ReferenceImage;
+  nextImage: ReferenceImage;
+}
+
+export interface RemoveReferenceImageOperation {
+  type: 'removeReferenceImage';
+  sceneId: string;
+  image: ReferenceImage;
 }
 
 export interface AddRelationshipOperation {
@@ -327,6 +443,12 @@ export interface RemoveAssetLibraryItemOperation {
   previousEntityAssets: Array<{ sceneId: string; entityId: string; asset?: EntityAssetData }>;
 }
 
+export interface UpdateAssetLibraryItemOperation {
+  type: 'updateAssetLibraryItem';
+  previousItem: AssetLibraryItem;
+  nextItem: AssetLibraryItem;
+}
+
 export interface UpdateEntityAssetOperation {
   type: 'updateEntityAsset';
   sceneId: string;
@@ -356,6 +478,10 @@ export type Operation =
   | AddEntityOperation
   | RemoveEntityOperation
   | UpdateBaseEntityOperation
+  | UpdateEntityDataOperation
+  | AddReferenceImageOperation
+  | UpdateReferenceImageOperation
+  | RemoveReferenceImageOperation
   | AddRelationshipOperation
   | RemoveRelationshipOperation
   | AddActionOperation
@@ -365,6 +491,7 @@ export type Operation =
   | RemoveGenerationResultOperation
   | AddAssetLibraryItemOperation
   | RemoveAssetLibraryItemOperation
+  | UpdateAssetLibraryItemOperation
   | UpdateEntityAssetOperation
   | AddShotOperation
   | RemoveShotOperation

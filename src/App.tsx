@@ -1,20 +1,163 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Viewport, type CaptureRenderMode, type ViewportHandle } from './components/Viewport';
-import { ComfyPanel, type PreparedComfyInputs } from './components/ComfyPanel';
-import { SceneGeneratorPanel } from './components/SceneGeneratorPanel';
-import { AssetLibraryPanel } from './components/AssetLibraryPanel';
-import { ACTION_LABELS } from './domain/actions';
+import { Onboarding, shouldShowOnboarding } from './components/Onboarding';
+import { DirectorWorkflowPanel } from './components/DirectorWorkflowPanel';
+import { CommandPalette } from './components/CommandPalette';
+import { SessionInsightsPanel } from './components/SessionInsightsPanel';
+import type { PreparedComfyInputs } from './components/ComfyPanel';
+import { ACTION_LABELS, collectActionConflicts } from './domain/actions';
+import { analyzeDirectorWorkflow, type DirectorActionId } from './domain/directorWorkflow';
+import { buildCommandCatalog, type AppCommandId } from './domain/commandPalette';
+import { appendCreatorSessionEvent, createCreatorSession, saveCreatorSession, type CreatorSessionEventType } from './domain/sessionInsights';
 import { buildCameraPrompt, buildMotionPrompt, buildShotPackageManifest, buildShotPrompt, createStoredZip, DEFAULT_NEGATIVE_PROMPT, downloadBlob, safeFilename } from './domain/export';
 import { POSE_PRESETS } from './domain/pose';
 import { ENVIRONMENT_PRESETS } from './domain/environmentPresets';
 import { describeRelationship, findControllingRelationship } from './domain/relationships';
 import { resolveSceneAtTime } from './domain/resolver';
-import { JOINT_NAMES, type ActionBlock, type ActionType, type Entity, type EntityType, type HandSide, type JointName, type Project, type RelationshipType, type Vec3 } from './domain/types';
+
+import { JOINT_NAMES, type ActionBlock, type ActionType, type Entity, type EntityType, type HandSide, type JointName, type Project, type ReferenceImage, type RelationshipType, type Vec3 } from './domain/types';
+import { saveAssetBlob } from './domain/assetStorage';
+import { MAX_REFERENCE_IMAGE_BYTES, MAX_REFERENCE_IMAGE_COUNT, MAX_REFERENCE_ITEM_BYTES, MAX_REFERENCE_SOURCE_BYTES, persistLegacyReferenceImages, referenceImageUrl } from './domain/referenceImages';
+import { latestRecoverySnapshot, listRecoverySnapshots, removeRecoverySnapshot, saveRecoverySnapshot } from './domain/recovery';
+import { connectProjectWorkspace, currentProjectWorkspace, saveBlobToWorkspace } from './domain/workspace';
+import { buildStorageCleanupPlan, cleanupUnusedAssetBlobs, registerProjectStorageReferences } from './domain/storageCleanup';
+import { probeBrowserRuntime, resolveRenderQuality, type RenderQualityProfile, type RuntimeDiagnostics } from './domain/runtimeDiagnostics';
+import { reportNativeSmokeReady } from './domain/desktopBridge';
 import { useEditorStore } from './store/editorStore';
 import './styles.css';
 
+const ComfyPanel = lazy(async () => ({ default: (await import('./components/ComfyPanel')).ComfyPanel }));
+const SceneGeneratorPanel = lazy(async () => ({ default: (await import('./components/SceneGeneratorPanel')).SceneGeneratorPanel }));
+const AssetLibraryPanel = lazy(async () => ({ default: (await import('./components/AssetLibraryPanel')).AssetLibraryPanel }));
+const ProjectDoctorPanel = lazy(async () => ({ default: (await import('./components/ProjectDoctorPanel')).ProjectDoctorPanel }));
+
+function ReferenceImagePreview({ image, alt, className }: { image: ReferenceImage; alt: string; className?: string }) {
+  const [src, setSrc] = useState<string | null>(image.dataUrl ?? null);
+  useEffect(() => {
+    let active = true;
+    void referenceImageUrl(image).then((url) => { if (active) setSrc(url); });
+    return () => { active = false; };
+  }, [image.storageKey, image.dataUrl]);
+  return src ? <img src={src} alt={alt} className={className} /> : <div className={`reference-placeholder ${className ?? ''}`}>이미지 로드 중</div>;
+}
+
+
+function TimelineActionRow({
+  action,
+  duration,
+  actorName,
+  selected,
+  conflicted,
+  onSelect,
+  onCommit,
+}: {
+  action: ActionBlock;
+  duration: number;
+  actorName: string;
+  selected: boolean;
+  conflicted: boolean;
+  onSelect(event?: React.MouseEvent<HTMLDivElement>): void;
+  onCommit(startTime: number, actionDuration: number): void;
+}) {
+  const rowRef = useRef<HTMLDivElement>(null);
+  const [draft, setDraft] = useState({ startTime: action.startTime, duration: action.duration });
+  const draftRef = useRef(draft);
+  useEffect(() => {
+    const next = { startTime: action.startTime, duration: action.duration };
+    draftRef.current = next;
+    setDraft(next);
+  }, [action.startTime, action.duration]);
+
+  const startDrag = (event: React.PointerEvent<HTMLDivElement>, mode: 'move' | 'start' | 'end') => {
+    event.preventDefault();
+    event.stopPropagation();
+    const row = rowRef.current;
+    if (!row) return;
+    const rect = row.getBoundingClientRect();
+    const timelineWidth = Math.max(1, rect.width - 120);
+    const originX = event.clientX;
+    const original = { ...draft };
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    const onMove = (moveEvent: PointerEvent) => {
+      const delta = ((moveEvent.clientX - originX) / timelineWidth) * duration;
+      let startTime = original.startTime;
+      let actionDuration = original.duration;
+      if (mode === 'move') startTime = Math.max(0, Math.min(duration - actionDuration, original.startTime + delta));
+      if (mode === 'start') {
+        const end = original.startTime + original.duration;
+        startTime = Math.max(0, Math.min(end - 0.1, original.startTime + delta));
+        actionDuration = end - startTime;
+      }
+      if (mode === 'end') actionDuration = Math.max(0.1, Math.min(duration - original.startTime, original.duration + delta));
+      startTime = Math.round(startTime * 20) / 20;
+      actionDuration = Math.round(actionDuration * 20) / 20;
+      const next = { startTime, duration: actionDuration };
+      draftRef.current = next;
+      setDraft(next);
+    };
+    const onUp = (upEvent: PointerEvent) => {
+      try { target.releasePointerCapture(upEvent.pointerId); } catch { /* capture may already be released */ }
+      target.removeEventListener('pointermove', onMove);
+      target.removeEventListener('pointerup', onUp);
+      target.removeEventListener('pointercancel', onUp);
+      onCommit(draftRef.current.startTime, draftRef.current.duration);
+    };
+    target.addEventListener('pointermove', onMove);
+    target.addEventListener('pointerup', onUp);
+    target.addEventListener('pointercancel', onUp);
+  };
+
+  return (
+    <div ref={rowRef} className={`action-track ${selected ? 'selected' : ''} ${conflicted ? 'conflicted' : ''}`} onClick={(event) => onSelect(event)}>
+      <span>{ACTION_LABELS[action.type]}{conflicted ? ' ⚠' : ''}</span>
+      <div className="action-lane">
+        <div
+          className="action-block"
+          style={{ left: `${(draft.startTime / duration) * 100}%`, width: `${(draft.duration / duration) * 100}%` }}
+          onPointerDown={(event) => startDrag(event, 'move')}
+        >
+          <button aria-label="시작 시간 조절" className="resize-handle start" onPointerDown={(event) => startDrag(event as unknown as React.PointerEvent<HTMLDivElement>, 'start')} />
+          <b>{actorName}</b>
+          <small>{draft.startTime.toFixed(2)}–{(draft.startTime + draft.duration).toFixed(2)}초</small>
+          <button aria-label="종료 시간 조절" className="resize-handle end" onPointerDown={(event) => startDrag(event as unknown as React.PointerEvent<HTMLDivElement>, 'end')} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function NumberField({ value, onChange, step = 0.1, disabled = false }: { value: number; onChange(value: number): void; step?: number; disabled?: boolean }) {
   return <input disabled={disabled} type="number" step={step} value={Number(value.toFixed(3))} onChange={(event) => onChange(Number(event.target.value))} />;
+}
+
+
+async function prepareReferenceImage(file: File): Promise<{ blob: Blob; mimeType: string; sizeBytes: number }> {
+  const rawUrl = URL.createObjectURL(file);
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error('참조 이미지 형식을 읽지 못했습니다.'));
+      element.src = rawUrl;
+    });
+    const maxDimension = 1800;
+    const ratio = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * ratio));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * ratio));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('이미지 압축용 Canvas를 만들지 못했습니다.');
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(
+      (result) => result ? resolve(result) : reject(new Error('참조 이미지를 WebP로 변환하지 못했습니다.')),
+      'image/webp',
+      0.84,
+    ));
+    return { blob, mimeType: blob.type || 'image/webp', sizeBytes: blob.size };
+  } finally {
+    URL.revokeObjectURL(rawUrl);
+  }
 }
 
 function downloadProject(project: Project) {
@@ -58,6 +201,10 @@ const RAD_TO_DEG = 180 / Math.PI;
 const DEG_TO_RAD = Math.PI / 180;
 
 export default function App() {
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => { void reportNativeSmokeReady(); });
+    return () => cancelAnimationFrame(frame);
+  }, []);
   const project = useEditorStore((state) => state.project);
   const activeShotId = useEditorStore((state) => state.activeShotId);
   const selectedEntityId = useEditorStore((state) => state.selectedEntityId);
@@ -81,10 +228,20 @@ export default function App() {
   const resetSelectedPose = useEditorStore((state) => state.resetSelectedPose);
   const mirrorSelectedPose = useEditorStore((state) => state.mirrorSelectedPose);
   const applySelectedArmIK = useEditorStore((state) => state.applySelectedArmIK);
+  const applySelectedLegIK = useEditorStore((state) => state.applySelectedLegIK);
+  const groundSelectedFeet = useEditorStore((state) => state.groundSelectedFeet);
   const addSelectedRelationship = useEditorStore((state) => state.addSelectedRelationship);
   const removeRelationship = useEditorStore((state) => state.removeRelationship);
   const addAction = useEditorStore((state) => state.addAction);
   const updateSelectedAction = useEditorStore((state) => state.updateSelectedAction);
+  const updateActionTiming = useEditorStore((state) => state.updateActionTiming);
+  const shiftActions = useEditorStore((state) => state.shiftActions);
+  const removeActions = useEditorStore((state) => state.removeActions);
+  const updateSelectedCamera = useEditorStore((state) => state.updateSelectedCamera);
+  const updateSelectedLight = useEditorStore((state) => state.updateSelectedLight);
+  const addReferenceImage = useEditorStore((state) => state.addReferenceImage);
+  const updateReferenceImage = useEditorStore((state) => state.updateReferenceImage);
+  const removeReferenceImage = useEditorStore((state) => state.removeReferenceImage);
   const removeSelectedAction = useEditorStore((state) => state.removeSelectedAction);
   const addGenerationResult = useEditorStore((state) => state.addGenerationResult);
   const removeGenerationResult = useEditorStore((state) => state.removeGenerationResult);
@@ -110,11 +267,72 @@ export default function App() {
   const redoCount = useEditorStore((state) => state.redoStack.length);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const bundleInputRef = useRef<HTMLInputElement>(null);
+  const referenceImageInputRef = useRef<HTMLInputElement>(null);
   const viewportRef = useRef<ViewportHandle>(null);
+  const hierarchyRef = useRef<HTMLElement>(null);
+  const inspectorRef = useRef<HTMLElement>(null);
+  const shotStripRef = useRef<HTMLElement>(null);
+  const timelineRef = useRef<HTMLElement>(null);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [comfyOpen, setComfyOpen] = useState(false);
   const [sceneGeneratorOpen, setSceneGeneratorOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [sessionInsightsOpen, setSessionInsightsOpen] = useState(false);
+  const [creatorSession, setCreatorSession] = useState(() => appendCreatorSessionEvent(createCreatorSession(), 'session_started', { appVersion: project.schemaVersion }));
+  const firstEditRecordedRef = useRef(false);
+  const firstEditCompletedRef = useRef(false);
+  const generatedSceneRevisionRef = useRef<number | null>(null);
+  const executeCommandRef = useRef<(id: AppCommandId, source?: 'palette' | 'shortcut') => void>(() => undefined);
+  const [workflowCollapsed, setWorkflowCollapsed] = useState(() => {
+    try { return localStorage.getItem('ai-scene-director-workflow-collapsed') === 'true'; } catch { return false; }
+  });
+  const [focusMode, setFocusMode] = useState(() => {
+    try { return localStorage.getItem('ai-scene-director-focus-mode') === 'true'; } catch { return false; }
+  });
+  const [firstEditGuideOpen, setFirstEditGuideOpen] = useState(false);
+  const [focusedArea, setFocusedArea] = useState<'hierarchy' | 'inspector' | 'shots' | 'timeline' | null>(null);
+  const [autoSaveStatus, setAutoSaveStatus] = useState('복구 저장 준비');
+  const [workspaceLabel, setWorkspaceLabel] = useState(currentProjectWorkspace()?.label ?? '');
+  const [recoveryCount, setRecoveryCount] = useState(() => listRecoverySnapshots().length);
+  const smokeMode = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('smoke');
+  const [onboardingOpen, setOnboardingOpen] = useState(() => smokeMode ? false : shouldShowOnboarding());
+  const [selectedActionIds, setSelectedActionIds] = useState<Set<string>>(new Set());
+  const [cleanupStatus, setCleanupStatus] = useState<string | null>(null);
+  const [doctorOpen, setDoctorOpen] = useState(false);
+  const [runtimeDiagnostics, setRuntimeDiagnostics] = useState<RuntimeDiagnostics | null>(() => {
+    try { return probeBrowserRuntime(); } catch { return null; }
+  });
+  const [renderQuality, setRenderQuality] = useState<RenderQualityProfile>(() => {
+    try {
+      const stored = localStorage.getItem('ai-scene-director-render-quality');
+      return stored === 'performance' || stored === 'balanced' || stored === 'quality' ? stored : 'auto';
+    } catch {
+      return 'auto';
+    }
+  });
+
+  const recordCreatorEvent = (type: CreatorSessionEventType, metadata: Record<string, unknown> = {}) => {
+    setCreatorSession((current) => {
+      const next = appendCreatorSessionEvent(current, type, metadata);
+      saveCreatorSession(next);
+      return next;
+    });
+  };
+
+  const openCommandPalette = () => {
+    setCommandPaletteOpen(true);
+    recordCreatorEvent('command_palette_opened');
+  };
+  useEffect(() => {
+    try { localStorage.setItem('ai-scene-director-workflow-collapsed', String(workflowCollapsed)); } catch { /* private mode */ }
+  }, [workflowCollapsed]);
+
+  useEffect(() => {
+    try { localStorage.setItem('ai-scene-director-focus-mode', String(focusMode)); } catch { /* private mode */ }
+  }, [focusMode]);
+
   const scene = project.scenes.find((item) => item.id === project.activeSceneId) ?? project.scenes[0];
   const shot = scene.shots.find((item) => item.id === activeShotId) ?? scene.shots[0];
   const baseSelected = scene.entities.find((item) => item.id === selectedEntityId) ?? null;
@@ -154,7 +372,115 @@ export default function App() {
   });
   const surfaceCandidates = scene.entities.filter((entity) => entity.type === 'prop' && entity.id !== actionTargetId);
   const selectedAction = (shot.actions ?? []).find((action) => action.id === selectedActionId) ?? null;
+  const actionConflicts = useMemo(() => collectActionConflicts(shot.actions ?? []), [shot.actions]);
+  const conflictedActionIds = useMemo(() => new Set(actionConflicts.flatMap((item) => [item.actionId, item.conflictingActionId])), [actionConflicts]);
   const previewLocked = playheadTime > 0 || isPlaying;
+  const effectiveRenderQuality = resolveRenderQuality(renderQuality, runtimeDiagnostics);
+  const directorReport = useMemo(() => analyzeDirectorWorkflow(project, scene.id, shot.id), [project, scene.id, shot.id]);
+  const shotReadinessById = useMemo(() => new Map(directorReport.shotReadiness.map((item) => [item.shotId, item])), [directorReport]);
+
+  useEffect(() => {
+    try {
+      const next = probeBrowserRuntime();
+      setRuntimeDiagnostics(next);
+      document.documentElement.dataset.aisdReady = 'true';
+      document.documentElement.dataset.aisdRuntime = next.status;
+    } catch {
+      setRuntimeDiagnostics(null);
+      document.documentElement.dataset.aisdReady = 'true';
+      document.documentElement.dataset.aisdRuntime = 'unknown';
+    }
+    return () => {
+      delete document.documentElement.dataset.aisdReady;
+      delete document.documentElement.dataset.aisdRuntime;
+    };
+  }, []);
+
+  const changeRenderQuality = (profile: RenderQualityProfile) => {
+    setRenderQuality(profile);
+    try { localStorage.setItem('ai-scene-director-render-quality', profile); } catch { /* private mode */ }
+  };
+
+  useEffect(() => {
+    setSelectedActionIds(new Set());
+  }, [activeShotId]);
+
+  useEffect(() => {
+    const existing = new Set((shot.actions ?? []).map((action) => action.id));
+    setSelectedActionIds((current) => new Set([...current].filter((id) => existing.has(id))));
+  }, [shot.actions]);
+
+  const selectTimelineAction = (actionId: string, event?: React.MouseEvent<HTMLDivElement>) => {
+    const additive = Boolean(event?.ctrlKey || event?.metaKey || event?.shiftKey);
+    setSelectedActionIds((current) => {
+      if (!additive) return new Set([actionId]);
+      const next = new Set(current);
+      if ((event?.ctrlKey || event?.metaKey) && next.has(actionId)) next.delete(actionId);
+      else next.add(actionId);
+      return next;
+    });
+    selectAction(actionId);
+  };
+
+  const cleanupLocalAssets = async () => {
+    setCleanupStatus('미사용 로컬 에셋 확인 중…');
+    try {
+      const plan = await buildStorageCleanupPlan(project);
+      if (!plan.unusedKeys.length) {
+        setCleanupStatus('정리할 미사용 로컬 에셋이 없습니다.');
+        return;
+      }
+      const confirmed = window.confirm(`현재 프로젝트에서 제거된 로컬 에셋 ${plan.unusedKeys.length}개를 영구 삭제합니다. 다른 프로젝트의 에셋은 삭제하지 않습니다.`);
+      if (!confirmed) {
+        setCleanupStatus('저장소 정리를 취소했습니다.');
+        return;
+      }
+      const result = await cleanupUnusedAssetBlobs(project);
+      setCleanupStatus(result.failedKeys.length
+        ? `${result.deletedKeys.length}개 정리 · ${result.failedKeys.length}개 실패`
+        : `미사용 로컬 에셋 ${result.deletedKeys.length}개 정리 완료`);
+    } catch (error) {
+      setCleanupStatus(error instanceof Error ? error.message : '로컬 에셋 정리에 실패했습니다.');
+    }
+  };
+
+  useEffect(() => {
+    registerProjectStorageReferences(project);
+  }, [project.id, project.revision]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const snapshot = saveRecoverySnapshot(project, activeShotId, 'auto');
+      setRecoveryCount(listRecoverySnapshots().length);
+      setAutoSaveStatus(`복구 저장 ${new Date(snapshot.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}`);
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [project.revision, activeShotId]);
+
+  useEffect(() => {
+    const handler = () => saveRecoverySnapshot(project, activeShotId, 'beforeunload');
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [project, activeShotId]);
+
+  useEffect(() => {
+    const images = project.scenes.flatMap((item) => item.referenceImages ?? []).filter((image) => Boolean(image.dataUrl));
+    if (!images.length) return;
+    void persistLegacyReferenceImages(images).then(() => {
+      images.forEach((image) => updateReferenceImage(image.id, { dataUrl: undefined }));
+    });
+  }, [project.id, project.schemaVersion]);
+
+  useEffect(() => {
+    if (!workspaceLabel) return undefined;
+    const timer = window.setTimeout(() => {
+      const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
+      void saveBlobToWorkspace(blob, '.aiscene-autosave.json')
+        .then(() => setAutoSaveStatus('프로젝트 폴더 자동 저장 완료'))
+        .catch((error) => setAutoSaveStatus(error instanceof Error ? error.message : '프로젝트 폴더 자동 저장 실패'));
+    }, 1600);
+    return () => window.clearTimeout(timer);
+  }, [project.revision, workspaceLabel]);
 
   useEffect(() => {
     const nextType = allowedRelationshipTypes.includes(relationshipType) ? relationshipType : allowedRelationshipTypes[0];
@@ -212,6 +538,46 @@ export default function App() {
     updateSelectedJoint(selectedJoint, next);
   };
 
+  const importReferenceImage = async (file: File | undefined) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) return;
+    if (file.size > MAX_REFERENCE_SOURCE_BYTES) {
+      alert('원본 참조 이미지는 20MB 이하만 불러올 수 있습니다.');
+      return;
+    }
+    const existingReferences = scene.referenceImages ?? [];
+    if (existingReferences.length >= MAX_REFERENCE_IMAGE_COUNT) {
+      alert('프로젝트당 참조 이미지는 최대 30개까지 지원합니다.');
+      return;
+    }
+    const prepared = await prepareReferenceImage(file);
+    if (prepared.sizeBytes > MAX_REFERENCE_ITEM_BYTES) {
+      alert('압축 후 이미지가 5MB를 넘습니다. 더 작은 이미지를 사용해 주세요.');
+      return;
+    }
+    const totalBytes = existingReferences.reduce((sum, item) => sum + item.sizeBytes, 0) + prepared.sizeBytes;
+    if (totalBytes > MAX_REFERENCE_IMAGE_BYTES) {
+      alert('참조 이미지 로컬 에셋 총량은 50MB까지 지원합니다.');
+      return;
+    }
+    const id = `reference-${crypto.randomUUID()}`;
+    const storageKey = `reference-image:${id}`;
+    await saveAssetBlob(storageKey, prepared.blob);
+    const image: ReferenceImage = {
+      id,
+      name: file.name.replace(/\.[^.]+$/, ''),
+      storageKey,
+      mimeType: prepared.mimeType,
+      sizeBytes: prepared.sizeBytes,
+      opacity: 0.45,
+      visible: true,
+      cameraEntityId: selected?.type === 'camera' ? selected.id : shot.cameraEntityId,
+      fit: 'contain',
+    };
+    addReferenceImage(image);
+    if (referenceImageInputRef.current) referenceImageInputRef.current.value = '';
+  };
+
   const createAction = () => {
     if (!actionActorId) return;
     const targetRequired = actionType === 'pickUp' || actionType === 'putDown' || actionType === 'cameraOrbit';
@@ -224,6 +590,7 @@ export default function App() {
     if (actionType === 'cameraDolly') parameters.distance = 2;
     if (actionType === 'cameraOrbit') parameters.angle = Math.PI / 2, parameters.clockwise = true;
     addAction(actionType, actionActorId, actionTargetId || undefined, parameters);
+    recordCreatorEvent('action_added', { actionType });
   };
 
   const runSimpleCommand = () => {
@@ -352,6 +719,82 @@ export default function App() {
     }
   };
 
+  const connectWorkspace = async () => {
+    try {
+      const workspace = await connectProjectWorkspace();
+      if (!workspace) return;
+      setWorkspaceLabel(workspace.label);
+      setAutoSaveStatus(`프로젝트 폴더 연결 · ${workspace.label}`);
+    } catch (error) {
+      setAutoSaveStatus(error instanceof Error ? error.message : '프로젝트 폴더를 연결하지 못했습니다.');
+    }
+  };
+
+  const saveWorkspaceBundle = async () => {
+    if (!workspaceLabel || isExporting) return;
+    setIsExporting(true);
+    setExportStatus('프로젝트 폴더에 전체 번들을 저장하는 중…');
+    try {
+      const { createProjectBundle } = await import('./domain/projectBundle');
+      const result = await createProjectBundle(project);
+      const path = await saveBlobToWorkspace(result.blob, `${safeFilename(project.name)}.aiscene.zip`);
+      setExportStatus(`프로젝트 폴더 저장 완료 · ${path}`);
+      saveRecoverySnapshot(project, activeShotId, 'manual');
+      setRecoveryCount(listRecoverySnapshots().length);
+    } catch (error) {
+      setExportStatus(error instanceof Error ? error.message : '프로젝트 폴더에 저장하지 못했습니다.');
+    } finally {
+      setIsExporting(false);
+      setTimeout(() => setExportStatus(null), 4200);
+    }
+  };
+
+  const restoreLatestRecovery = () => {
+    const snapshot = latestRecoverySnapshot();
+    if (!snapshot) { setAutoSaveStatus('복구 가능한 스냅샷이 없습니다.'); return; }
+    if (!importProject(snapshot.project)) { setAutoSaveStatus('복구 스냅샷을 열지 못했습니다.'); return; }
+    const recoveredScene = snapshot.project.scenes.find((item) => item.id === snapshot.project.activeSceneId) ?? snapshot.project.scenes[0];
+    if (recoveredScene?.shots.some((item) => item.id === snapshot.activeShotId)) setActiveShot(snapshot.activeShotId);
+    removeRecoverySnapshot(snapshot.id);
+    setRecoveryCount(listRecoverySnapshots().length);
+    setAutoSaveStatus(`복구 완료 · ${new Date(snapshot.createdAt).toLocaleString('ko-KR')}`);
+  };
+
+  const exportProjectBundle = async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    setExportStatus('프로젝트와 로컬 GLB를 번들로 묶는 중…');
+    try {
+      const { createProjectBundle } = await import('./domain/projectBundle');
+      const result = await createProjectBundle(project);
+      downloadBlob(result.blob, `${safeFilename(project.name)}.aiscene.zip`);
+      setExportStatus(result.missingAssetIds.length
+        ? `번들 완료 · 누락 GLB ${result.missingAssetIds.length}개`
+        : `프로젝트 번들 완료 · GLB ${project.assetLibrary.length}개 · 참조 이미지 ${project.scenes.reduce((sum, item) => sum + (item.referenceImages?.length ?? 0), 0)}개 포함`);
+    } catch (error) {
+      setExportStatus(error instanceof Error ? error.message : '프로젝트 번들을 만들지 못했습니다.');
+    } finally {
+      setIsExporting(false);
+      setTimeout(() => setExportStatus(null), 4200);
+    }
+  };
+
+  const importBundleFile = async (file: File | undefined) => {
+    if (!file) return;
+    setExportStatus('프로젝트 번들과 GLB를 복원하는 중…');
+    try {
+      const { importProjectBundle } = await import('./domain/projectBundle');
+      const result = await importProjectBundle(file);
+      importProject(result.project);
+      setExportStatus(`번들 불러오기 완료 · GLB ${result.restoredAssetIds.length}개 · 참조 이미지 ${result.restoredReferenceImageIds.length}개 복원${result.missingAssetIds.length + result.missingReferenceImageIds.length ? ` · 누락 ${result.missingAssetIds.length + result.missingReferenceImageIds.length}개` : ''}`);
+    } catch (error) {
+      setExportStatus(error instanceof Error ? error.message : '프로젝트 번들을 불러오지 못했습니다.');
+    } finally {
+      if (bundleInputRef.current) bundleInputRef.current.value = '';
+      setTimeout(() => setExportStatus(null), 4500);
+    }
+  };
+
   const prepareComfyInputs = async (mode: 'test' | 'full', onStatus: (message: string) => void): Promise<PreparedComfyInputs> => {
     if (!viewportRef.current) throw new Error('3D 뷰포트가 준비되지 않았습니다.');
     const capture = async (time: number, renderMode: CaptureRenderMode, status: string) => {
@@ -387,6 +830,7 @@ export default function App() {
   const exportShotPackage = async () => {
     if (!viewportRef.current || isExporting) return;
     setIsExporting(true);
+    recordCreatorEvent('export_started', { kind: 'shot-package', shotCount: scene.shots.length });
     setExportStatus('시작 프레임 렌더링');
     try {
       const capture = async (time: number, mode: CaptureRenderMode, status: string) => {
@@ -423,7 +867,9 @@ export default function App() {
       ]);
       downloadBlob(zip, `${safeFilename(project.name)}_${safeFilename(shot.name)}_shot-package.zip`);
       setExportStatus('Shot Package 내보내기 완료');
+      recordCreatorEvent('export_completed', { kind: 'shot-package', actionCount: shot.actions.length });
     } catch (error) {
+      recordCreatorEvent('error', { area: 'shot-export' });
       setExportStatus(error instanceof Error ? error.message : 'Shot Package를 만들지 못했습니다.');
     } finally {
       setIsExporting(false);
@@ -431,24 +877,212 @@ export default function App() {
     }
   };
 
+  const focusArea = (area: 'hierarchy' | 'inspector' | 'shots' | 'timeline', element: HTMLElement | null) => {
+    if (focusMode && (area === 'hierarchy' || area === 'inspector')) setFocusMode(false);
+    setFocusedArea(area);
+    window.setTimeout(() => {
+      element?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      window.setTimeout(() => setFocusedArea(null), 1400);
+    }, 40);
+  };
+
+  const selectPrimarySubject = () => {
+    const lead = scene.entities.find((entity) => entity.type === 'character' && entity.character?.appearance.role === 'lead')
+      ?? scene.entities.find((entity) => entity.type === 'character');
+    const promptProp = scene.entities.find((entity) => entity.type === 'prop' && entity.asset?.source === 'prompt')
+      ?? scene.entities.find((entity) => entity.type === 'prop' && !entity.locked)
+      ?? scene.entities.find((entity) => entity.type === 'prop');
+    const subject = lead ?? promptProp ?? scene.entities.find((entity) => entity.type === 'camera');
+    if (subject) {
+      selectEntity(subject.id);
+      setTransformMode(subject.type === 'character' ? 'translate' : 'translate');
+      focusArea('inspector', inspectorRef.current);
+    }
+  };
+
+  const handleDirectorAction = (action: DirectorActionId) => {
+    recordCreatorEvent('workflow_navigated', { action });
+    if (action === 'openSceneGenerator') { setSceneGeneratorOpen(true); return; }
+    if (action === 'selectPrimarySubject') { selectPrimarySubject(); return; }
+    if (action === 'selectLeadCharacter') {
+      const lead = scene.entities.find((entity) => entity.type === 'character' && entity.character?.appearance.role === 'lead')
+        ?? scene.entities.find((entity) => entity.type === 'character');
+      if (lead) { selectEntity(lead.id); setTransformMode('translate'); focusArea('inspector', inspectorRef.current); }
+      return;
+    }
+    if (action === 'focusSceneHierarchy') {
+      const subject = scene.entities.find((entity) => entity.type === 'character' && entity.character?.appearance.role === 'lead')
+        ?? scene.entities.find((entity) => entity.type === 'character')
+        ?? scene.entities.find((entity) => entity.type === 'prop');
+      if (subject) selectEntity(subject.id);
+      focusArea('hierarchy', hierarchyRef.current);
+      return;
+    }
+    if (action === 'selectShotCamera') {
+      const camera = scene.entities.find((entity) => entity.id === shot.cameraEntityId && entity.type === 'camera')
+        ?? scene.entities.find((entity) => entity.type === 'camera');
+      if (camera) { selectEntity(camera.id); focusArea('inspector', inspectorRef.current); }
+      else addEntity('camera');
+      return;
+    }
+    if (action === 'focusShotStrip') { focusArea('shots', shotStripRef.current); return; }
+    if (action === 'addShot') { addShot(); focusArea('shots', shotStripRef.current); return; }
+    if (action === 'focusTimeline') {
+      setPlayheadTime(0);
+      const lead = scene.entities.find((entity) => entity.type === 'character' && entity.character?.appearance.role === 'lead')
+        ?? scene.entities.find((entity) => entity.type === 'character');
+      if (lead) { selectEntity(lead.id); setActionActorId(lead.id); setActionType('walk'); }
+      focusArea('timeline', timelineRef.current);
+      return;
+    }
+    if (action === 'openProjectDoctor') { setDoctorOpen(true); return; }
+    if (action === 'exportShotPackage') { void exportShotPackage(); }
+  };
+
+  const applyGeneratedScene = (prompt: string) => {
+    replaceActiveSceneFromPrompt(prompt);
+    firstEditRecordedRef.current = false;
+    firstEditCompletedRef.current = false;
+    generatedSceneRevisionRef.current = project.revision + 1;
+    recordCreatorEvent('scene_applied', { source: 'natural-language' });
+    setFirstEditGuideOpen(true);
+    setWorkflowCollapsed(true);
+    setFocusMode(false);
+    window.setTimeout(() => viewportRef.current && document.querySelector('.viewport')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80);
+  };
+
+
+
+  useEffect(() => {
+    if (!firstEditGuideOpen || !directorReport.journey.firstEdit.ready || firstEditRecordedRef.current) return;
+    firstEditRecordedRef.current = true;
+    recordCreatorEvent('first_edit_ready', { targetKind: directorReport.journey.firstEdit.targetKind });
+  }, [firstEditGuideOpen, directorReport.journey.firstEdit.ready, directorReport.journey.firstEdit.targetKind]);
+
+  useEffect(() => {
+    const baseline = generatedSceneRevisionRef.current;
+    if (baseline === null || firstEditCompletedRef.current || project.revision <= baseline) return;
+    firstEditCompletedRef.current = true;
+    recordCreatorEvent('first_edit_completed', { revisionDelta: project.revision - baseline });
+  }, [project.revision]);
+
+  const commandCatalog = useMemo(() => buildCommandCatalog({
+    canUndo: undoCount > 0,
+    canRedo: redoCount > 0,
+    canSaveWorkspace: Boolean(workspaceLabel),
+    hasSelection: Boolean(selected),
+    isPlaying,
+    focusMode,
+    workflowCollapsed,
+  }), [undoCount, redoCount, workspaceLabel, selected, isPlaying, focusMode, workflowCollapsed]);
+
+  const executeCommand = (id: AppCommandId, source: 'palette' | 'shortcut' = 'palette') => {
+    recordCreatorEvent(source === 'shortcut' ? 'shortcut_used' : 'command_executed', { commandId: id });
+    if (id === 'openSceneGenerator') { setSceneGeneratorOpen(true); recordCreatorEvent('scene_generator_opened', { source }); return; }
+    if (id === 'focusSceneHierarchy') { handleDirectorAction('focusSceneHierarchy'); return; }
+    if (id === 'focusShotStrip') { handleDirectorAction('focusShotStrip'); return; }
+    if (id === 'focusTimeline') { handleDirectorAction('focusTimeline'); return; }
+    if (id === 'openProjectDoctor') { setDoctorOpen(true); recordCreatorEvent('project_checked', { source }); return; }
+    if (id === 'exportShotPackage') { void exportShotPackage(); return; }
+    if (id === 'toggleFocusMode') { setFocusMode((value) => !value); return; }
+    if (id === 'toggleWorkflow') { setWorkflowCollapsed((value) => !value); return; }
+    if (id === 'undo') { if (undoCount) undo(); return; }
+    if (id === 'redo') { if (redoCount) redo(); return; }
+    if (id === 'transformTranslate') { setTransformMode('translate'); return; }
+    if (id === 'transformRotate') { setTransformMode('rotate'); return; }
+    if (id === 'transformScale') { setTransformMode('scale'); return; }
+    if (id === 'transformPose') { if (selected?.type === 'character') setTransformMode('pose'); return; }
+    if (id === 'togglePlayback') { togglePlayback(); return; }
+    if (id === 'resetPlayhead') { setPlayheadTime(0); return; }
+    if (id === 'addShot') { addShot(); recordCreatorEvent('shot_added', { source }); focusArea('shots', shotStripRef.current); return; }
+    if (id === 'duplicateShot') { duplicateActiveShot(); recordCreatorEvent('shot_added', { source: 'duplicate' }); return; }
+    if (id === 'selectShotCamera') { handleDirectorAction('selectShotCamera'); return; }
+    if (id === 'saveProject') { if (workspaceLabel) void saveWorkspaceBundle(); else void exportProjectBundle(); return; }
+    if (id === 'exportProjectBundle') { void exportProjectBundle(); return; }
+    if (id === 'openOnboarding') { setOnboardingOpen(true); return; }
+    if (id === 'openSessionInsights') { setSessionInsightsOpen(true); return; }
+  };
+  executeCommandRef.current = executeCommand;
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const editable = Boolean(target && (target.matches('input, textarea, select') || target.isContentEditable));
+      const modifier = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (modifier && key === 'k') { event.preventDefault(); openCommandPalette(); return; }
+      if (event.key === 'Escape') {
+        if (commandPaletteOpen) setCommandPaletteOpen(false);
+        else if (sessionInsightsOpen) setSessionInsightsOpen(false);
+        else if (sceneGeneratorOpen) setSceneGeneratorOpen(false);
+        else if (doctorOpen) setDoctorOpen(false);
+        return;
+      }
+      if (editable || commandPaletteOpen || sessionInsightsOpen) return;
+      let commandId: AppCommandId | null = null;
+      if (modifier && key === 'z' && event.shiftKey) commandId = 'redo';
+      else if (modifier && key === 'z') commandId = 'undo';
+      else if (event.ctrlKey && key === 'y') commandId = 'redo';
+      else if (modifier && key === 's') commandId = 'saveProject';
+      else if (modifier && event.shiftKey && key === 'n') commandId = 'addShot';
+      else if (modifier && key === 'd') commandId = 'duplicateShot';
+      else if (event.altKey && key === '1') commandId = 'openSceneGenerator';
+      else if (event.altKey && key === '2') commandId = 'focusSceneHierarchy';
+      else if (event.altKey && key === '3') commandId = 'focusShotStrip';
+      else if (event.altKey && key === '4') commandId = 'focusTimeline';
+      else if (event.altKey && key === '5') commandId = 'openProjectDoctor';
+      else if (event.altKey && key === '6') commandId = 'exportShotPackage';
+      else if (!event.altKey && !modifier && !event.shiftKey && key === 'g') commandId = 'openSceneGenerator';
+      else if (!event.altKey && !modifier && !event.shiftKey && key === 'w') commandId = 'transformTranslate';
+      else if (!event.altKey && !modifier && !event.shiftKey && key === 'e') commandId = 'transformRotate';
+      else if (!event.altKey && !modifier && !event.shiftKey && key === 'r') commandId = 'transformScale';
+      else if (!event.altKey && !modifier && !event.shiftKey && key === 'p') commandId = 'transformPose';
+      else if (!event.altKey && !modifier && !event.shiftKey && key === 'c') commandId = 'selectShotCamera';
+      else if (!event.altKey && !modifier && event.shiftKey && key === 'f') commandId = 'toggleWorkflow';
+      else if (!event.altKey && !modifier && !event.shiftKey && key === 'f') commandId = 'toggleFocusMode';
+      else if (event.code === 'Space') commandId = 'togglePlayback';
+      else if (event.key === 'Home') commandId = 'resetPlayhead';
+      else if (event.key === '?') commandId = 'openOnboarding';
+      if (!commandId) return;
+      event.preventDefault();
+      executeCommandRef.current(commandId, 'shortcut');
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [commandPaletteOpen, sessionInsightsOpen, sceneGeneratorOpen, doctorOpen]);
+
   const selectedPose = selected?.character?.pose;
   const selectedJointRotation = selectedPose && selectedJoint ? selectedPose[selectedJoint] : null;
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${focusMode ? 'focus-mode' : ''}`} data-aisd-ready="true" data-runtime-status={runtimeDiagnostics?.status ?? 'checking'}>
       <header>
         <div>
           <strong>{project.name}</strong>
           <span>revision {project.revision}</span>
           <span>schema {project.schemaVersion}</span>
-          <span>로컬 자동 저장</span>
+          <span>{autoSaveStatus}</span>
+          <span className={`runtime-status ${runtimeDiagnostics?.status ?? 'checking'}`}>환경 {runtimeDiagnostics?.score ?? '…'} · {effectiveRenderQuality}</span>
+          {workspaceLabel && <span title={workspaceLabel}>폴더: {workspaceLabel.split(/[\\/]/).pop()}</span>}
         </div>
         <nav>
-          <button onClick={undo} disabled={!undoCount}>실행 취소</button>
-          <button onClick={redo} disabled={!redoCount}>다시 실행</button>
-          <button className="scene-generator-button" onClick={() => setSceneGeneratorOpen(true)}>AI 씬 생성</button>
-          <button className="primary-export" disabled={isExporting} onClick={exportShotPackage}>{isExporting ? '패키지 생성 중…' : 'Shot Package'}</button>
+          <button className="focus-essential" onClick={undo} disabled={!undoCount}>실행 취소</button>
+          <button className="focus-essential" onClick={redo} disabled={!redoCount}>다시 실행</button>
+          <button className="command-search-button focus-essential" onClick={openCommandPalette}>명령 검색 <kbd>⌘K</kbd></button>
+          <button className="scene-generator-button focus-essential" onClick={() => executeCommand('openSceneGenerator')}>AI 씬 생성</button>
+          <button className="primary-export focus-essential" disabled={isExporting} onClick={exportShotPackage}>{isExporting ? '패키지 생성 중…' : 'Shot Package'}</button>
           <button className="comfy-button" onClick={() => setComfyOpen(true)}>ComfyUI</button>
+          <button onClick={connectWorkspace}>{workspaceLabel ? '폴더 변경' : '프로젝트 폴더'}</button>
+          <button disabled={!workspaceLabel || isExporting} onClick={saveWorkspaceBundle}>폴더에 저장</button>
+          <button disabled={!recoveryCount} onClick={restoreLatestRecovery}>최근 복구 ({recoveryCount})</button>
+          <button onClick={() => void cleanupLocalAssets()}>저장소 정리</button>
+          <button onClick={() => setDoctorOpen(true)}>프로젝트 점검</button>
+          <button className="focus-essential" onClick={() => setOnboardingOpen(true)}>도움말</button>
+          <button onClick={() => setSessionInsightsOpen(true)}>세션 기록</button>
+          <button className="focus-essential focus-toggle" onClick={() => setFocusMode((value) => !value)}>{focusMode ? '집중 종료' : '집중 모드'}</button>
+          <button className="bundle-button" disabled={isExporting} onClick={exportProjectBundle}>프로젝트 번들</button>
+          <button onClick={() => bundleInputRef.current?.click()}>번들 불러오기</button>
+          <input ref={bundleInputRef} className="file-input" type="file" accept=".zip,.aiscene.zip,application/zip" onChange={(event) => importBundleFile(event.target.files?.[0])} />
           <button onClick={() => downloadProject(project)}>JSON 내보내기</button>
           <button onClick={() => fileInputRef.current?.click()}>JSON 불러오기</button>
           <input ref={fileInputRef} className="file-input" type="file" accept=".json,.aiscene.json" onChange={(event) => importFile(event.target.files?.[0])} />
@@ -456,8 +1090,30 @@ export default function App() {
         </nav>
       </header>
 
+      {runtimeDiagnostics?.status === 'unsupported' && (
+        <button className="runtime-warning" onClick={() => setDoctorOpen(true)}>
+          현재 실행 환경에서 3D 편집 또는 로컬 에셋 저장이 제한됩니다. 프로젝트 점검에서 상세 내용을 확인하세요.
+        </button>
+      )}
+
       <section className="workspace">
-        <aside className="panel hierarchy">
+        <DirectorWorkflowPanel report={directorReport} activeShotName={shot.name} collapsed={workflowCollapsed || focusMode} focusMode={focusMode} onAction={handleDirectorAction} onToggleCollapsed={() => setWorkflowCollapsed((value) => !value)} onToggleFocus={() => setFocusMode((value) => !value)} />
+        {firstEditGuideOpen && (
+          <section className="first-edit-guide" data-first-edit-ready={directorReport.journey.firstEdit.ready}>
+            <div>
+              <span>장면 생성 완료 · 첫 수정 준비</span>
+              <strong>{directorReport.journey.firstEdit.label}</strong>
+              <small>{directorReport.journey.firstEdit.instruction}</small>
+            </div>
+            <div className="first-edit-actions">
+              {directorReport.journey.firstEdit.quickActions.map((item) => (
+                <button key={item.id} onClick={() => handleDirectorAction(item.id)}>{item.label}</button>
+              ))}
+              <button className="guide-close" onClick={() => setFirstEditGuideOpen(false)}>닫기</button>
+            </div>
+          </section>
+        )}
+        <aside ref={hierarchyRef} className={`panel hierarchy ${focusedArea === 'hierarchy' ? 'workflow-focus-target' : ''}`}>
           <div className="panel-title-row">
             <h2>씬 계층</h2>
             <span>{scene.entities.length}개</span>
@@ -497,12 +1153,23 @@ export default function App() {
             <button onClick={toggleSelectedLock} disabled={!selected}>{baseSelected?.locked ? '잠금 해제' : '잠금'}</button>
             <button className="danger" onClick={deleteSelected} disabled={!selected}>삭제</button>
           </div>
-          <AssetLibraryPanel />
+          <Suspense fallback={<div className="panel-loading">에셋 라이브러리 로드 중…</div>}><AssetLibraryPanel /></Suspense>
         </aside>
 
-        <Viewport ref={viewportRef} />
+        {runtimeDiagnostics?.status === 'unsupported' ? (
+          <section className="viewport viewport-unavailable" data-testid="viewport-safe-mode">
+            <div>
+              <strong>3D 안전 모드</strong>
+              <p>이 환경에서는 WebGL 또는 로컬 저장소를 사용할 수 없어 3D 뷰포트를 열지 않았습니다.</p>
+              <p>프로젝트 데이터 편집·진단·복구·내보내기는 계속 사용할 수 있습니다.</p>
+              <button onClick={() => setDoctorOpen(true)}>환경 진단 열기</button>
+            </div>
+          </section>
+        ) : (
+          <Viewport ref={viewportRef} qualityProfile={effectiveRenderQuality} />
+        )}
 
-        <aside className="panel inspector">
+        <aside ref={inspectorRef} className={`panel inspector ${focusedArea === 'inspector' ? 'workflow-focus-target' : ''}`}>
           <h2>속성</h2>
           {selected && baseSelected ? (
             <>
@@ -556,6 +1223,72 @@ export default function App() {
                 <label>Z <NumberField disabled={Boolean(controlledRelationship) || previewLocked} value={selected.transform.scale[2]} onChange={(value) => updateAxis('transform.scale', 2, value)} /></label>
               </div>
 
+              {selected.type === 'camera' && selected.camera && (
+                <section className="camera-light-inspector">
+                  <div className="section-title-row"><h3>카메라 렌즈 · Shot Override</h3><span>{selected.camera.aspectRatio}</span></div>
+                  <div className="axis-fields two">
+                    <label>FOV <NumberField disabled={previewLocked} value={selected.camera.fov} step={1} onChange={(value) => updateSelectedCamera({ fov: value })} /></label>
+                    <label>Near <NumberField disabled={previewLocked} value={selected.camera.near} step={0.01} onChange={(value) => updateSelectedCamera({ near: value })} /></label>
+                    <label>Far <NumberField disabled={previewLocked} value={selected.camera.far} step={1} onChange={(value) => updateSelectedCamera({ far: value })} /></label>
+                    <label>화면비
+                      <select disabled={previewLocked} value={selected.camera.aspectRatio} onChange={(event) => updateSelectedCamera({ aspectRatio: event.target.value as typeof selected.camera.aspectRatio })}>
+                        <option value="16:9">16:9 가로</option><option value="9:16">9:16 세로</option><option value="1:1">1:1 정사각</option><option value="4:3">4:3</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label className="toggle-row"><input type="checkbox" checked={selected.camera.showSafeFrame} onChange={(event) => updateSelectedCamera({ showSafeFrame: event.target.checked })} /> 샷 카메라 안전 프레임</label>
+                </section>
+              )}
+
+              {selected.type === 'light' && selected.light && (
+                <section className="camera-light-inspector">
+                  <div className="section-title-row"><h3>조명 · Shot Override</h3><span>{selected.light.kind}</span></div>
+                  <label className="stacked-label">유형
+                    <select disabled={previewLocked} value={selected.light.kind} onChange={(event) => updateSelectedLight({ kind: event.target.value as typeof selected.light.kind })}>
+                      <option value="directional">방향광</option><option value="point">포인트</option><option value="spot">스포트</option><option value="ambient">환경광</option>
+                    </select>
+                  </label>
+                  <div className="axis-fields two">
+                    <label>세기 <NumberField disabled={previewLocked} value={selected.light.intensity} step={0.1} onChange={(value) => updateSelectedLight({ intensity: value })} /></label>
+                    <label>범위 <NumberField disabled={previewLocked} value={selected.light.range} step={0.5} onChange={(value) => updateSelectedLight({ range: value })} /></label>
+                    <label>각도 <NumberField disabled={previewLocked} value={selected.light.angle * RAD_TO_DEG} step={5} onChange={(value) => updateSelectedLight({ angle: value * DEG_TO_RAD })} /></label>
+                    <label>색상 <input disabled={previewLocked} type="color" value={selected.light.color} onChange={(event) => updateSelectedLight({ color: event.target.value })} /></label>
+                  </div>
+                  {selected.light.kind === 'spot' && (
+                    <label className="stacked-label">조명 대상
+                      <select disabled={previewLocked} value={selected.light.targetEntityId ?? ''} onChange={(event) => updateSelectedLight({ targetEntityId: event.target.value || undefined })}>
+                        <option value="">회전 방향 사용</option>
+                        {scene.entities.filter((entity) => entity.id !== selected.id && entity.type !== 'light').map((entity) => <option key={entity.id} value={entity.id}>{entity.name}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  <label className="toggle-row"><input type="checkbox" checked={selected.light.castShadow} onChange={(event) => updateSelectedLight({ castShadow: event.target.checked })} /> 그림자 생성</label>
+                </section>
+              )}
+
+              {selected.type === 'camera' && (
+                <section className="reference-inspector">
+                  <div className="section-title-row"><h3>참조 이미지</h3><span>{(scene.referenceImages ?? []).filter((image) => !image.cameraEntityId || image.cameraEntityId === selected.id).length}개</span></div>
+                  <input ref={referenceImageInputRef} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void importReferenceImage(event.target.files?.[0])} />
+                  <button onClick={() => referenceImageInputRef.current?.click()}>+ 카메라 참조 이미지</button>
+                  <p className="help-text">샷 카메라 보기 위에 반투명으로 겹쳐 구도와 캐릭터 위치를 맞춥니다. IndexedDB 로컬 에셋으로 저장하며 프로젝트 번들에 원본 WebP를 포함합니다. 최대 30개·총 50MB를 지원합니다.</p>
+                  <div className="reference-list">
+                    {(scene.referenceImages ?? []).filter((image) => !image.cameraEntityId || image.cameraEntityId === selected.id).map((image) => (
+                      <div key={image.id} className="reference-row">
+                        <ReferenceImagePreview image={image} alt={image.name} />
+                        <div>
+                          <strong>{image.name}</strong>
+                          <label>투명도 <input type="range" min={0} max={1} step={0.05} value={image.opacity} onChange={(event) => updateReferenceImage(image.id, { opacity: Number(event.target.value) })} /></label>
+                          <select value={image.fit} onChange={(event) => updateReferenceImage(image.id, { fit: event.target.value as ReferenceImage['fit'] })}><option value="contain">전체 맞춤</option><option value="cover">화면 채움</option></select>
+                        </div>
+                        <label className="reference-visible"><input type="checkbox" checked={image.visible} onChange={(event) => updateReferenceImage(image.id, { visible: event.target.checked })} />표시</label>
+                        <button className="danger" onClick={() => removeReferenceImage(image.id)}>삭제</button>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
               {selected.type === 'character' && selectedPose && (
                 <section className="pose-inspector">
                   <div className="section-title-row">
@@ -589,14 +1322,22 @@ export default function App() {
                     </>
                   )}
 
-                  <h3>간단한 손 IK</h3>
+                  <h3>손 IK</h3>
                   <div className="ik-grid">
                     <button disabled={previewLocked} onClick={() => { setSelectedJoint('leftWrist'); applySelectedArmIK('left', [-0.45, 1.25, -0.55]); }}>왼손 앞으로</button>
                     <button disabled={previewLocked} onClick={() => { setSelectedJoint('rightWrist'); applySelectedArmIK('right', [0.45, 1.25, -0.55]); }}>오른손 앞으로</button>
                     <button disabled={previewLocked} onClick={() => { setSelectedJoint('leftWrist'); applySelectedArmIK('left', [-0.25, 1.85, 0]); }}>왼손 위로</button>
                     <button disabled={previewLocked} onClick={() => { setSelectedJoint('rightWrist'); applySelectedArmIK('right', [0.25, 1.85, 0]); }}>오른손 위로</button>
                   </div>
-                  <p className="help-text">포즈·IK 모드에서 손목 관절을 선택하면 분홍색 목표점을 직접 끌 수 있습니다.</p>
+                  <h3>다리 IK·지면</h3>
+                  <div className="ik-grid">
+                    <button disabled={previewLocked} onClick={() => { setSelectedJoint('leftAnkle'); applySelectedLegIK('left', [-0.2, 0.08, -0.35]); }}>왼발 앞으로</button>
+                    <button disabled={previewLocked} onClick={() => { setSelectedJoint('rightAnkle'); applySelectedLegIK('right', [0.2, 0.08, -0.35]); }}>오른발 앞으로</button>
+                    <button disabled={previewLocked} onClick={() => { setSelectedJoint('leftAnkle'); applySelectedLegIK('left', [-0.2, 0.28, -0.15]); }}>왼발 들기</button>
+                    <button disabled={previewLocked} onClick={() => { setSelectedJoint('rightAnkle'); applySelectedLegIK('right', [0.2, 0.28, -0.15]); }}>오른발 들기</button>
+                    <button className="wide-button" disabled={previewLocked} onClick={groundSelectedFeet}>양발 지면 고정</button>
+                  </div>
+                  <p className="help-text">포즈 모드에서 모든 관절은 회전 링으로 직접 조절할 수 있습니다. 손목은 분홍색, 발목은 초록색 목표점을 끌어 IK를 적용합니다.</p>
                 </section>
               )}
 
@@ -657,7 +1398,7 @@ export default function App() {
         </aside>
       </section>
 
-      <section className="shot-strip">
+      <section ref={shotStripRef} className={`shot-strip ${focusedArea === 'shots' ? 'workflow-focus-target' : ''}`}>
         <div className="shot-actions">
           <button onClick={addShot}>+ 새 샷</button>
           <button onClick={duplicateActiveShot}>현재 샷 복제</button>
@@ -667,6 +1408,7 @@ export default function App() {
           <button key={item.id} className={item.id === activeShotId ? 'shot active' : 'shot'} onClick={() => setActiveShot(item.id)}>
             <strong>{item.name}</strong>
             <span>{item.duration}초 · Override {item.overrides.length}개 · 관계 {item.relationships.length}개 · 행동 {(item.actions ?? []).length}개 · 결과 {(item.generationResults ?? []).length}개</span>
+            {(() => { const readiness = shotReadinessById.get(item.id); return readiness ? <small className={`shot-readiness ${readiness.status}`} title={readiness.issues.join('\n') || '출력 준비 완료'}>{readiness.status === 'ready' ? '출력 준비' : readiness.status === 'blocked' ? '수정 필요' : `점검 ${readiness.score}`}</small> : null; })()}
           </button>
         ))}
         <div className="shot-editor">
@@ -675,7 +1417,7 @@ export default function App() {
         </div>
       </section>
 
-      <section className="timeline-panel">
+      <section ref={timelineRef} className={`timeline-panel ${focusedArea === 'timeline' ? 'workflow-focus-target' : ''}`}>
         <div className="timeline-controls">
           <button onClick={() => setPlayheadTime(0)}>처음</button>
           <button className={isPlaying ? 'active' : ''} onClick={togglePlayback}>{isPlaying ? '정지' : '재생'}</button>
@@ -709,18 +1451,42 @@ export default function App() {
           <div className="playhead" style={{ left: `${(playheadTime / shot.duration) * 100}%` }} />
           {(shot.actions ?? []).length === 0 && <div className="timeline-empty">행동을 추가하면 이곳에 시간 블록이 표시됩니다.</div>}
           {(shot.actions ?? []).map((action) => (
-            <button key={action.id} className={selectedActionId === action.id ? 'action-track selected' : 'action-track'} onClick={() => selectAction(action.id)}>
-              <span>{ACTION_LABELS[action.type]}</span>
-              <i style={{ left: `${(action.startTime / shot.duration) * 100}%`, width: `${(action.duration / shot.duration) * 100}%` }}>{scene.entities.find((entity) => entity.id === action.actorEntityId)?.name}</i>
-            </button>
+            <TimelineActionRow
+              key={action.id}
+              action={action}
+              duration={shot.duration}
+              actorName={scene.entities.find((entity) => entity.id === action.actorEntityId)?.name ?? '알 수 없는 객체'}
+              selected={selectedActionIds.has(action.id) || selectedActionId === action.id}
+              conflicted={conflictedActionIds.has(action.id)}
+              onSelect={(event) => selectTimelineAction(action.id, event)}
+              onCommit={(startTime, actionDuration) => updateActionTiming(action.id, startTime, actionDuration)}
+            />
           ))}
         </div>
+        {selectedActionIds.size > 1 && (
+          <div className="bulk-action-editor">
+            <strong>{selectedActionIds.size}개 행동 선택</strong>
+            <button onClick={() => shiftActions([...selectedActionIds], -0.25)}>−0.25초</button>
+            <button onClick={() => shiftActions([...selectedActionIds], 0.25)}>+0.25초</button>
+            <button onClick={() => setSelectedActionIds(new Set())}>선택 해제</button>
+            <button className="danger" onClick={() => { removeActions([...selectedActionIds]); setSelectedActionIds(new Set()); }}>선택 삭제</button>
+          </div>
+        )}
+        {actionConflicts.length > 0 && (
+          <div className="timeline-conflict-notice">⚠ 같은 객체를 동시에 사용하는 행동 {actionConflicts.length}쌍이 있습니다. 블록을 이동하거나 길이를 줄여 주세요.</div>
+        )}
         {selectedAction && (
           <div className="action-editor">
             <strong>{ACTION_LABELS[selectedAction.type]}</strong>
             <label>시작 <NumberField value={selectedAction.startTime} step={0.1} onChange={(value) => updateSelectedAction({ startTime: value })} /></label>
             <label>길이 <NumberField value={selectedAction.duration} step={0.1} onChange={(value) => updateSelectedAction({ duration: value })} /></label>
             {(selectedAction.type === 'walk' || selectedAction.type === 'cameraDolly') && <label>거리 <NumberField value={selectedAction.parameters.distance ?? 1.5} step={0.1} onChange={(value) => updateSelectedAction({ parameters: { ...selectedAction.parameters, distance: value } })} /></label>}
+            {selectedAction.type === 'walk' && <>
+              <label>보폭 <NumberField value={selectedAction.parameters.strideLength ?? 0.72} step={0.05} onChange={(value) => updateSelectedAction({ parameters: { ...selectedAction.parameters, strideLength: value } })} /></label>
+              <label>발 높이 <NumberField value={selectedAction.parameters.stepHeight ?? 0.11} step={0.01} onChange={(value) => updateSelectedAction({ parameters: { ...selectedAction.parameters, stepHeight: value } })} /></label>
+              <label>걸음 속도 <NumberField value={selectedAction.parameters.cadence ?? 1.8} step={0.1} onChange={(value) => updateSelectedAction({ parameters: { ...selectedAction.parameters, cadence: value } })} /></label>
+              <label>상체 기울기 <NumberField value={selectedAction.parameters.bodyLean ?? 0.08} step={0.02} onChange={(value) => updateSelectedAction({ parameters: { ...selectedAction.parameters, bodyLean: value } })} /></label>
+            </>}
             {(selectedAction.type === 'turnAround' || selectedAction.type === 'cameraOrbit') && <label>각도(°) <NumberField value={(selectedAction.parameters.angle ?? Math.PI) * RAD_TO_DEG} step={5} onChange={(value) => updateSelectedAction({ parameters: { ...selectedAction.parameters, angle: value * DEG_TO_RAD } })} /></label>}
             <button className="danger" onClick={removeSelectedAction}>행동 삭제</button>
           </div>
@@ -740,22 +1506,36 @@ export default function App() {
         <button onClick={runSimpleCommand}>적용</button>
       </section>
 
-      <SceneGeneratorPanel
+      <Suspense fallback={null}><SceneGeneratorPanel
         open={sceneGeneratorOpen}
         onClose={() => setSceneGeneratorOpen(false)}
-        onApply={replaceActiveSceneFromPrompt}
-      />
+        onApply={applyGeneratedScene}
+      /></Suspense>
 
-      <ComfyPanel
+      <Suspense fallback={null}><ComfyPanel
         open={comfyOpen}
         onClose={() => setComfyOpen(false)}
         onPrepareInputs={prepareComfyInputs}
         onRegisterResult={addGenerationResult}
         results={shot.generationResults ?? []}
         onRemoveResult={removeGenerationResult}
-      />
+      /></Suspense>
+
+      <CommandPalette open={commandPaletteOpen} commands={commandCatalog} onClose={() => setCommandPaletteOpen(false)} onExecute={(id) => executeCommand(id, 'palette')} />
+      <SessionInsightsPanel open={sessionInsightsOpen} session={creatorSession} onClose={() => setSessionInsightsOpen(false)} onClear={() => { const next = appendCreatorSessionEvent(createCreatorSession(), 'session_started', { appVersion: project.schemaVersion }); setCreatorSession(next); saveCreatorSession(next); }} />
 
       {exportStatus && <div className="export-status">{exportStatus}</div>}
+      {cleanupStatus && <button className="export-status cleanup-status" onClick={() => setCleanupStatus(null)}>{cleanupStatus}</button>}
+      <Suspense fallback={null}><ProjectDoctorPanel
+        open={doctorOpen}
+        project={project}
+        runtime={runtimeDiagnostics}
+        renderQuality={renderQuality}
+        onRenderQualityChange={changeRenderQuality}
+        onApplyProject={importProject}
+        onClose={() => setDoctorOpen(false)}
+      /></Suspense>
+      <Onboarding open={onboardingOpen} onClose={() => setOnboardingOpen(false)} onOpenSceneGenerator={() => setSceneGeneratorOpen(true)} />
 
       {message && (
         <button className="toast" onClick={clearMessage} aria-label="알림 닫기">

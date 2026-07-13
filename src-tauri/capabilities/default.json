@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "Main editor window with access to application commands only.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

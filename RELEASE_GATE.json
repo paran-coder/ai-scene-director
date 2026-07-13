@@ -1,0 +1,121 @@
+{
+  "generatedAt": "2026-07-13T02:37:00.810Z",
+  "version": "1.0.0-rc.9",
+  "expectedReleaseId": null,
+  "evidence": {
+    "localBrowser": 1,
+    "platformBrowsers": [],
+    "nativePlatforms": [],
+    "nativeRuntimePlatforms": [],
+    "validation": {
+      "status": "not-run",
+      "version": "1.0.0-rc.9",
+      "releaseId": null,
+      "platforms": [
+        {
+          "platform": "linux",
+          "status": "not-run",
+          "version": null,
+          "releaseId": null,
+          "issues": [
+            "linux 증거가 부족합니다: browser, artifacts, runtime"
+          ]
+        },
+        {
+          "platform": "windows",
+          "status": "not-run",
+          "version": null,
+          "releaseId": null,
+          "issues": [
+            "windows 증거가 부족합니다: browser, artifacts, runtime"
+          ]
+        },
+        {
+          "platform": "macos",
+          "status": "not-run",
+          "version": null,
+          "releaseId": null,
+          "issues": [
+            "macos 증거가 부족합니다: browser, artifacts, runtime"
+          ]
+        }
+      ],
+      "issues": [
+        "linux: linux 증거가 부족합니다: browser, artifacts, runtime",
+        "windows: windows 증거가 부족합니다: browser, artifacts, runtime",
+        "macos: macos 증거가 부족합니다: browser, artifacts, runtime"
+      ]
+    }
+  },
+  "status": "conditional",
+  "passed": [
+    "automated-preflight",
+    "browser-smoke-local",
+    "rig-fixtures",
+    "long-session-stress"
+  ],
+  "blockers": [],
+  "pendingExternal": [
+    "browser-smoke-platforms",
+    "native-installers",
+    "native-runtime",
+    "release-evidence-integrity"
+  ],
+  "optionalFailures": [],
+  "checks": [
+    {
+      "id": "automated-preflight",
+      "label": "자동 테스트·빌드·번들 예산",
+      "required": true,
+      "status": "pass",
+      "detail": "1.0.0-rc.9"
+    },
+    {
+      "id": "browser-smoke-local",
+      "label": "현재 환경 실브라우저 앱 셸·안전 모드",
+      "required": false,
+      "status": "pass",
+      "detail": "cdp-injected"
+    },
+    {
+      "id": "browser-smoke-platforms",
+      "label": "Windows·macOS·Linux 실브라우저 검증",
+      "required": true,
+      "status": "not-run",
+      "detail": "0/3 platform reports"
+    },
+    {
+      "id": "native-installers",
+      "label": "Windows·macOS·Linux 설치 산출물",
+      "required": true,
+      "status": "not-run",
+      "detail": "0/3 platform reports"
+    },
+    {
+      "id": "native-runtime",
+      "label": "Windows·macOS·Linux Tauri WebView 실제 실행",
+      "required": true,
+      "status": "not-run",
+      "detail": "0/3 platform reports"
+    },
+    {
+      "id": "release-evidence-integrity",
+      "label": "플랫폼 증거 버전·실행 ID·체크섬 일치",
+      "required": true,
+      "status": "not-run",
+      "detail": "linux: linux 증거가 부족합니다: browser, artifacts, runtime | windows: windows 증거가 부족합니다: browser, artifacts, runtime | macos: macos 증거가 부족합니다: browser, artifacts, runtime"
+    },
+    {
+      "id": "rig-fixtures",
+      "label": "Mixamo·VRM·Generic GLB 리그",
+      "required": true,
+      "status": "pass"
+    },
+    {
+      "id": "long-session-stress",
+      "label": "반복 편집·복구 스트레스",
+      "required": true,
+      "status": "pass"
+    }
+  ]
+}

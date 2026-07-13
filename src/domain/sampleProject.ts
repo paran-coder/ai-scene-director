@@ -3,7 +3,7 @@ import type { Project } from './types.ts';
 
 export const sampleProject: Project = {
   id: 'project-001',
-  schemaVersion: '0.10.0',
+  schemaVersion: '1.0.0-rc.9',
   name: '카페 대화 장면',
   revision: 1,
   activeSceneId: 'scene-001',
@@ -68,8 +68,10 @@ export const sampleProject: Project = {
           transform: { position: [0, 2.5, 8], rotation: [-0.2, 0, 0], scale: [1, 1, 1] },
           visible: true,
           locked: false,
+          camera: { projection: 'perspective', fov: 48, near: 0.1, far: 100, aspectRatio: '16:9', showSafeFrame: true },
         },
       ],
+      referenceImages: [],
       shots: [
         { id: 'shot-001', name: '와이드 샷', order: 1, duration: 4, cameraEntityId: 'camera-wide', overrides: [], relationships: [], actions: [], generationResults: [] },
         { id: 'shot-002', name: '지윤 클로즈업', order: 2, duration: 3, cameraEntityId: 'camera-wide', overrides: [], relationships: [], actions: [], generationResults: [] },

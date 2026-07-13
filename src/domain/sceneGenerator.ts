@@ -72,6 +72,8 @@ const ATMOSPHERE_WORDS = [
   '따뜻한', '차가운', '긴장된', '쓸쓸한', '밝은', '어두운', '몽환적인',
 ];
 
+const PRODUCT_WORDS = ['제품', '상품', '헤드폰', '향수', '시계', '신발', '스마트폰', '화장품', '가전', '패키지'];
+
 interface PropDefinition {
   keyword: string;
   name: string;
@@ -96,6 +98,11 @@ const PROP_DEFINITIONS: PropDefinition[] = [
   { keyword: '노트북', name: '노트북', scale: [0.55, 0.08, 0.38], baseY: 0.04 },
   { keyword: '전화기', name: '전화기', scale: [0.18, 0.32, 0.06], baseY: 0.16 },
   { keyword: '책', name: '책', scale: [0.35, 0.08, 0.48], baseY: 0.04 },
+  { keyword: '헤드폰', name: '헤드폰', scale: [0.8, 0.72, 0.32], baseY: 0.36 },
+  { keyword: '향수', name: '향수', scale: [0.28, 0.55, 0.22], baseY: 0.275 },
+  { keyword: '시계', name: '시계', scale: [0.42, 0.12, 0.42], baseY: 0.06 },
+  { keyword: '신발', name: '신발', scale: [0.72, 0.34, 0.3], baseY: 0.17 },
+  { keyword: '스마트폰', name: '스마트폰', scale: [0.18, 0.34, 0.035], baseY: 0.02 },
   { keyword: '병', name: '병', scale: [0.18, 0.55, 0.18], baseY: 0.275 },
 ];
 
@@ -255,7 +262,9 @@ function extractCharacters(text: string): GeneratedCharacterPlan[] {
   const descriptors = extractCharacterDescriptors(text);
   const count = extractRequestedCharacterCount(text);
   const values = properNames.length ? properNames : descriptors;
-  const desiredCount = Math.max(values.length, count ?? 0, 1);
+  const hasExplicitCharacterCue = values.length > 0 || count !== undefined || CHARACTER_WORDS.some((word) => text.includes(word));
+  const productOnly = PRODUCT_WORDS.some((word) => text.includes(word)) && !hasExplicitCharacterCue;
+  const desiredCount = productOnly ? 0 : Math.max(values.length, count ?? 0, 1);
   const characters: GeneratedCharacterPlan[] = [];
   for (let index = 0; index < desiredCount; index += 1) {
     const name = values[index] ?? `인물 ${index + 1}`;
@@ -301,7 +310,7 @@ function extractProps(text: string, characterCount: number): GeneratedPropPlan[]
   for (const definition of PROP_DEFINITIONS) {
     if (!text.includes(definition.keyword)) continue;
     if (definition.keyword === '컵' && text.includes('커피 컵')) continue;
-    result.push({ name: definition.name, count: detectCount(text, definition.keyword), source: 'prompt', category: definition.name === '자전거' || definition.name === '자동차' ? 'vehicle' : definition.name === '우산' || definition.name.includes('컵') || definition.name === '가방' || definition.name === '책' || definition.name === '노트북' || definition.name === '병' ? 'handheld' : 'furniture' });
+    result.push({ name: definition.name, count: detectCount(text, definition.keyword), source: 'prompt', category: definition.name === '자전거' || definition.name === '자동차' ? 'vehicle' : definition.name === '우산' || definition.name.includes('컵') || ['가방', '책', '노트북', '병', '헤드폰', '향수', '시계', '신발', '스마트폰'].includes(definition.name) ? 'handheld' : 'furniture' });
   }
   if (/앉아|앉은|앉혀/.test(text) && !result.some((item) => item.name === '의자') && !result.some((item) => item.name === '소파')) {
     result.push({ name: '의자', count: Math.max(1, characterCount), source: 'prompt', category: 'furniture' });
@@ -643,6 +652,7 @@ export function buildSceneFromPlan(plan: SceneGenerationPlan, sceneId = 'scene-g
       id: `camera-generated-${index + 1}`,
       name: `${shotPlan.name} 카메라`,
       type: 'camera', transform: { ...transform, scale: [1, 1, 1] }, visible: true, locked: false,
+      camera: { projection: 'perspective', fov: shotPlan.kind === 'closeUp' ? 38 : shotPlan.kind === 'wide' ? 55 : 48, near: 0.1, far: 100, aspectRatio: '16:9', showSafeFrame: true },
     };
     cameras.push(camera);
     return {
@@ -660,12 +670,14 @@ export function buildSceneFromPlan(plan: SceneGenerationPlan, sceneId = 'scene-g
   const lights: Entity[] = [
     {
       id: 'light-key-generated', name: plan.atmosphere.some((word) => word.includes('밤') || word === '어두운') ? '차가운 키 라이트' : '소프트 키 라이트', type: 'light',
-      transform: { position: [-3, 5, 3], rotation: [0, 0, 0], scale: [1.2, 1.2, 1.2] }, visible: true, locked: false,
+      transform: { position: [-3, 5, 3], rotation: [-0.6, -0.5, 0], scale: [1.2, 1.2, 1.2] }, visible: true, locked: false,
+      light: { kind: 'directional', color: plan.atmosphere.some((word) => word.includes('밤') || word === '차가운') ? '#93c5fd' : '#fef3c7', intensity: 2.4, range: 14, angle: Math.PI / 4, castShadow: true },
       asset: { category: 'lighting', primitive: 'sphere', color: plan.atmosphere.some((word) => word.includes('밤') || word === '차가운') ? '#93c5fd' : '#fef3c7', material: 'emissive', source: 'preset', tags: ['key-light'] },
     },
     {
       id: 'light-fill-generated', name: '필 라이트', type: 'light',
       transform: { position: [3, 3.5, 1], rotation: [0, 0, 0], scale: [0.8, 0.8, 0.8] }, visible: true, locked: false,
+      light: { kind: 'point', color: '#f8fafc', intensity: 1.2, range: 10, angle: Math.PI / 3, castShadow: false },
       asset: { category: 'lighting', primitive: 'sphere', color: '#f8fafc', material: 'emissive', source: 'preset', tags: ['fill-light'] },
     },
   ];
@@ -676,6 +688,7 @@ export function buildSceneFromPlan(plan: SceneGenerationPlan, sceneId = 'scene-g
     environment: createEnvironmentState(plan.environmentPreset, plan.atmosphere),
     entities: [...characters, ...props, ...cameras, ...lights],
     shots,
+    referenceImages: [],
   };
 }
 

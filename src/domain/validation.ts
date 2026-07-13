@@ -1,3 +1,4 @@
+import { collectActionConflicts } from './actions.ts';
 import { createEnvironmentState, resolveEnvironmentPreset } from './environmentPresets.ts';
 import { createNeutralPose } from './pose.ts';
 import {
@@ -5,7 +6,9 @@ import {
   type ActionBlock,
   type AssetLibraryItem,
   type Entity,
+  type ReferenceImage,
   type GenerationResult,
+  type HumanoidRigProportions,
   type PoseState,
   type Project,
   type Relationship,
@@ -13,7 +16,7 @@ import {
   type Vec3,
 } from './types.ts';
 
-export const CURRENT_SCHEMA_VERSION = '0.10.0';
+export const CURRENT_SCHEMA_VERSION = '1.0.0-rc.9';
 
 export interface ProjectValidationResult {
   success: boolean;
@@ -30,6 +33,8 @@ const OVERRIDE_PATHS = new Set([
   'transform.scale',
   'visible',
   'character.pose',
+  'camera.settings',
+  'light.settings',
 ]);
 const RELATIONSHIP_TYPES = new Set(['lookAt', 'hold', 'sitOn', 'placeOn']);
 const ACTION_TYPES = new Set(['walk', 'turnAround', 'pickUp', 'putDown', 'cameraDolly', 'cameraOrbit']);
@@ -55,6 +60,44 @@ function isTransform(value: unknown): boolean {
   return isRecord(value) && isVec3(value.position) && isVec3(value.rotation) && isVec3(value.scale);
 }
 
+
+
+function isCameraData(value: unknown): boolean {
+  return isRecord(value)
+    && value.projection === 'perspective'
+    && isFiniteNumber(value.fov) && value.fov >= 10 && value.fov <= 140
+    && isFiniteNumber(value.near) && value.near > 0
+    && isFiniteNumber(value.far) && value.far > Number(value.near)
+    && ['16:9', '9:16', '1:1', '4:3'].includes(String(value.aspectRatio))
+    && typeof value.showSafeFrame === 'boolean';
+}
+
+function isLightData(value: unknown): boolean {
+  return isRecord(value)
+    && ['directional', 'point', 'spot', 'ambient'].includes(String(value.kind))
+    && typeof value.color === 'string'
+    && isFiniteNumber(value.intensity) && value.intensity >= 0
+    && isFiniteNumber(value.range) && value.range >= 0
+    && isFiniteNumber(value.angle) && value.angle > 0 && value.angle <= Math.PI
+    && typeof value.castShadow === 'boolean'
+    && (value.targetEntityId === undefined || typeof value.targetEntityId === 'string');
+}
+
+function isReferenceImage(value: unknown): value is ReferenceImage {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.name === 'string'
+    && typeof value.storageKey === 'string'
+    && value.storageKey.length > 0
+    && (value.dataUrl === undefined || (typeof value.dataUrl === 'string' && value.dataUrl.startsWith('data:image/')))
+    && typeof value.mimeType === 'string'
+    && value.mimeType.startsWith('image/')
+    && isFiniteNumber(value.sizeBytes) && value.sizeBytes >= 0
+    && isFiniteNumber(value.opacity) && value.opacity >= 0 && value.opacity <= 1
+    && typeof value.visible === 'boolean'
+    && (value.cameraEntityId === undefined || typeof value.cameraEntityId === 'string')
+    && ['contain', 'cover'].includes(String(value.fit));
+}
 
 function isAppearance(value: unknown): boolean {
   if (!isRecord(value)) return false;
@@ -82,8 +125,56 @@ function isAsset(value: unknown): boolean {
 }
 
 
+
+function isRigProportions(value: unknown): value is HumanoidRigProportions {
+  if (!isRecord(value) || !isFiniteNumber(value.referenceHeight) || !isFiniteNumber(value.pelvisHeight)) return false;
+  const validArm = (arm: unknown) => isRecord(arm)
+    && isVec3(arm.shoulderOffset)
+    && isFiniteNumber(arm.upperLength)
+    && arm.upperLength > 0
+    && isFiniteNumber(arm.lowerLength)
+    && arm.lowerLength > 0;
+  const validLeg = (leg: unknown) => isRecord(leg)
+    && isVec3(leg.hipOffset)
+    && isFiniteNumber(leg.upperLength)
+    && leg.upperLength > 0
+    && isFiniteNumber(leg.lowerLength)
+    && leg.lowerLength > 0
+    && isFiniteNumber(leg.footLength)
+    && leg.footLength > 0;
+  return validArm(value.leftArm) && validArm(value.rightArm) && validLeg(value.leftLeg) && validLeg(value.rightLeg);
+}
+
+function migrateRigProportions(value: unknown): HumanoidRigProportions | undefined {
+  if (!isRecord(value) || !isFiniteNumber(value.referenceHeight)) return undefined;
+  const validArm = (arm: unknown) => isRecord(arm)
+    && isVec3(arm.shoulderOffset)
+    && isFiniteNumber(arm.upperLength) && arm.upperLength > 0
+    && isFiniteNumber(arm.lowerLength) && arm.lowerLength > 0;
+  if (!validArm(value.leftArm) || !validArm(value.rightArm)) return undefined;
+  const migrated = structuredClone(value) as unknown as HumanoidRigProportions;
+  if (!isFiniteNumber(migrated.pelvisHeight)) migrated.pelvisHeight = 0.9;
+  if (!isRecord(migrated.leftLeg)) migrated.leftLeg = { hipOffset: [-0.16, -0.08, 0], upperLength: 0.44, lowerLength: 0.42, footLength: 0.29 };
+  if (!isRecord(migrated.rightLeg)) migrated.rightLeg = { hipOffset: [0.16, -0.08, 0], upperLength: 0.44, lowerLength: 0.42, footLength: 0.29 };
+  return isRigProportions(migrated) ? migrated : undefined;
+}
+
+function isRigProfile(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (!['humanoid', 'partial', 'none'].includes(String(value.status))) return false;
+  if (!['mixamo', 'vrm', 'generic', 'none'].includes(String(value.detectedPreset))) return false;
+  if (!isFiniteNumber(value.skeletonCount) || !isFiniteNumber(value.mappedJointCount)) return false;
+  if (!Array.isArray(value.nodeNames) || !value.nodeNames.every((name) => typeof name === 'string')) return false;
+  if (!Array.isArray(value.missingJoints) || !value.missingJoints.every((joint) => JOINT_NAMES.includes(joint as never))) return false;
+  if (!Array.isArray(value.animationClips) || !value.animationClips.every((name) => typeof name === 'string')) return false;
+  if (!isRecord(value.boneMap) || !Object.entries(value.boneMap).every(([joint, boneName]) => JOINT_NAMES.includes(joint as never) && typeof boneName === 'string')) return false;
+  if (!isRecord(value.axisCorrections) || !Object.entries(value.axisCorrections).every(([joint, correction]) => JOINT_NAMES.includes(joint as never) && isVec3(correction))) return false;
+  return value.proportions === undefined || isRigProportions(value.proportions);
+}
+
 function isAssetLibraryItem(value: unknown): value is AssetLibraryItem {
   if (!isRecord(value)) return false;
+  if ('rig' in value && value.rig !== undefined && !isRigProfile(value.rig)) return false;
   return typeof value.id === 'string'
     && typeof value.name === 'string'
     && value.kind === 'glb'
@@ -143,6 +234,22 @@ function migrateEntity(raw: Record<string, unknown>, migrated: boolean, warnings
   } else {
     delete entity.character;
   }
+  if (entity.type === 'camera') {
+    if (!isCameraData(entity.camera)) {
+      entity.camera = { projection: 'perspective', fov: 48, near: 0.1, far: 100, aspectRatio: '16:9', showSafeFrame: true };
+      warnings.push(`${entity.name}: 기본 카메라 렌즈 설정을 추가했습니다.`);
+    }
+    delete entity.light;
+  } else if (entity.type === 'light') {
+    if (!isLightData(entity.light)) {
+      entity.light = { kind: 'directional', color: '#fff4d6', intensity: 2, range: 12, angle: Math.PI / 4, castShadow: true };
+      warnings.push(`${entity.name}: 기본 조명 설정을 추가했습니다.`);
+    }
+    delete entity.camera;
+  } else {
+    delete entity.camera;
+    delete entity.light;
+  }
   if (!isAsset(entity.asset)) {
     entity.asset = {
       category: entity.type === 'prop' ? 'generic' : entity.type === 'light' ? 'lighting' : 'generic',
@@ -170,6 +277,8 @@ function validateOverride(value: unknown, entityIds: Set<string>, errors: string
   if (value.path === 'visible' && typeof value.value !== 'boolean') errors.push(`${location}: visible 값은 boolean이어야 합니다.`);
   if (value.path.startsWith('transform.') && !isVec3(value.value)) errors.push(`${location}: Transform 값은 유한한 Vec3여야 합니다.`);
   if (value.path === 'character.pose' && !isPose(value.value)) errors.push(`${location}: 포즈 데이터가 올바르지 않습니다.`);
+  if (value.path === 'camera.settings' && !isCameraData(value.value)) errors.push(`${location}: 카메라 설정이 올바르지 않습니다.`);
+  if (value.path === 'light.settings' && !isLightData(value.value)) errors.push(`${location}: 조명 설정이 올바르지 않습니다.`);
   return true;
 }
 
@@ -280,7 +389,7 @@ function validateAction(
   if ('direction' in parameters && parameters.direction !== undefined && !isVec3(parameters.direction)) {
     errors.push(`${location}: direction은 Vec3여야 합니다.`);
   }
-  for (const key of ['distance', 'angle'] as const) {
+  for (const key of ['distance', 'angle', 'strideLength', 'stepHeight', 'cadence', 'bodyLean'] as const) {
     if (key in parameters && parameters[key] !== undefined && !isFiniteNumber(parameters[key])) {
       errors.push(`${location}: ${key} 값은 유한한 숫자여야 합니다.`);
     }
@@ -344,6 +453,23 @@ export function validateAndMigrateProject(value: unknown): ProjectValidationResu
   const assetLibraryIds = new Set<string>();
   if (Array.isArray(raw.assetLibrary)) {
     raw.assetLibrary.forEach((item, index) => {
+      if (isRecord(item) && isRecord(item.rig)) {
+        if (!isRecord(item.rig.axisCorrections)) {
+          item.rig.axisCorrections = {};
+          warnings.push(`assetLibrary[${index}]: 빈 본 축 보정 정보를 추가했습니다.`);
+        }
+        if ('proportions' in item.rig && item.rig.proportions !== undefined) {
+          const proportions = migrateRigProportions(item.rig.proportions);
+          if (proportions) {
+            const changed = !isRigProportions(item.rig.proportions);
+            item.rig.proportions = proportions;
+            if (changed) warnings.push(`assetLibrary[${index}]: 다리 비율과 골반 높이 정보를 추가했습니다.`);
+          } else {
+            delete item.rig.proportions;
+            warnings.push(`assetLibrary[${index}]: 잘못된 신체 비율 정보를 제거했습니다.`);
+          }
+        }
+      }
       if (!isAssetLibraryItem(item)) {
         errors.push(`assetLibrary[${index}]: GLB 에셋 정보가 올바르지 않습니다.`);
         return;
@@ -371,6 +497,26 @@ export function validateAndMigrateProject(value: unknown): ProjectValidationResu
       const preset = resolveEnvironmentPreset(sceneValue.name);
       sceneValue.environment = createEnvironmentState(preset, []);
       warnings.push(`${location}: ${preset.name} 환경 프리셋을 추가했습니다.`);
+    }
+    if (!Array.isArray(sceneValue.referenceImages)) {
+      sceneValue.referenceImages = [];
+      warnings.push(`${location}: 빈 참조 이미지 배열을 추가했습니다.`);
+    }
+    const referenceIds = new Set<string>();
+    if (Array.isArray(sceneValue.referenceImages)) {
+      sceneValue.referenceImages.forEach((image, imageIndex) => {
+        const imageLocation = `${location}.referenceImages[${imageIndex}]`;
+        if (isRecord(image) && typeof image.id === 'string' && typeof image.storageKey !== 'string') {
+          image.storageKey = `reference-image:${image.id}`;
+          warnings.push(`${imageLocation}: 참조 이미지를 로컬 에셋 형식으로 변환했습니다.`);
+        }
+        if (!isReferenceImage(image)) {
+          errors.push(`${imageLocation}: 참조 이미지 정보가 올바르지 않습니다.`);
+          return;
+        }
+        if (referenceIds.has(image.id)) errors.push(`${imageLocation}: 중복 참조 이미지 ID입니다.`);
+        referenceIds.add(image.id);
+      });
     }
     if (!Array.isArray(sceneValue.entities)) {
       errors.push(`${location}.entities가 배열이 아닙니다.`);
@@ -400,6 +546,24 @@ export function validateAndMigrateProject(value: unknown): ProjectValidationResu
     }
     sceneValue.entities = migratedEntities;
     const entityMap = new Map(migratedEntities.map((entity) => [entity.id, entity]));
+    for (const entity of migratedEntities) {
+      if (entity.type !== 'light' || !entity.light?.targetEntityId) continue;
+      const target = entityMap.get(entity.light.targetEntityId);
+      if (!target || target.id === entity.id) {
+        delete entity.light.targetEntityId;
+        warnings.push(`${entity.name}: 존재하지 않는 스포트라이트 대상을 해제했습니다.`);
+      }
+    }
+    if (Array.isArray(sceneValue.referenceImages)) {
+      sceneValue.referenceImages.forEach((image, imageIndex) => {
+        if (!isRecord(image) || image.cameraEntityId === undefined) return;
+        const camera = entityMap.get(String(image.cameraEntityId));
+        if (!camera || camera.type !== 'camera') {
+          delete image.cameraEntityId;
+          warnings.push(`${location}.referenceImages[${imageIndex}]: 존재하지 않는 카메라 연결을 해제했습니다.`);
+        }
+      });
+    }
 
     if (!Array.isArray(sceneValue.shots) || sceneValue.shots.length === 0) {
       errors.push(`${location}: 최소 한 개의 Shot이 필요합니다.`);
@@ -420,7 +584,15 @@ export function validateAndMigrateProject(value: unknown): ProjectValidationResu
       const cameraEntity = migratedEntities.find((entity) => entity.id === shotValue.cameraEntityId);
       if (cameraEntity && cameraEntity.type !== 'camera') errors.push(`${shotLocation}: cameraEntityId가 카메라가 아닙니다.`);
       if (!Array.isArray(shotValue.overrides)) errors.push(`${shotLocation}.overrides가 배열이 아닙니다.`);
-      else shotValue.overrides.forEach((override, overrideIndex) => validateOverride(override, entityIds, errors, `${shotLocation}.overrides[${overrideIndex}]`));
+      else shotValue.overrides.forEach((override, overrideIndex) => {
+        if (isRecord(override) && override.path === 'light.settings' && isRecord(override.value) && typeof override.value.targetEntityId === 'string') {
+          if (!entityIds.has(override.value.targetEntityId) || override.value.targetEntityId === override.entityId) {
+            delete override.value.targetEntityId;
+            warnings.push(`${shotLocation}.overrides[${overrideIndex}]: 존재하지 않는 스포트라이트 대상을 해제했습니다.`);
+          }
+        }
+        validateOverride(override, entityIds, errors, `${shotLocation}.overrides[${overrideIndex}]`);
+      });
 
       if (!Array.isArray(shotValue.relationships)) {
         shotValue.relationships = [];
@@ -453,6 +625,10 @@ export function validateAndMigrateProject(value: unknown): ProjectValidationResu
           }
           validateAction(action, entityMap, Number(shotValue.duration), errors, actionLocation);
         });
+      }
+      if (Array.isArray(shotValue.actions)) {
+        const conflicts = collectActionConflicts(shotValue.actions.filter((action): action is ActionBlock => isRecord(action) && typeof action.id === 'string' && typeof action.type === 'string') as ActionBlock[]);
+        if (conflicts.length > 0) warnings.push(`${shotLocation}: 같은 객체를 동시에 사용하는 행동 ${conflicts.length}쌍을 확인해 주세요.`);
       }
 
       if (!Array.isArray(shotValue.generationResults)) {

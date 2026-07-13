@@ -1,15 +1,18 @@
 import { Grid, Line, OrbitControls, TransformControls } from '@react-three/drei';
 import { Canvas, useFrame, useThree, type RootState } from '@react-three/fiber';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Box3, Euler, Group, Matrix4, Mesh, MeshBasicMaterial, MeshDepthMaterial, Quaternion, Vector3 } from 'three';
+import { Box3, Euler, Group, Matrix4, Mesh, MeshBasicMaterial, MeshDepthMaterial, Object3D, PerspectiveCamera, Quaternion, SpotLight, Vector3 } from 'three';
 import { entityMaskColor } from '../domain/export';
 import { getAssetObjectUrl } from '../domain/assetStorage';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { calculateHandLocalPosition, createNeutralPose } from '../domain/pose';
+import { createAsyncResourceCache } from '../domain/resourceCache';
+import { referenceImageUrl } from '../domain/referenceImages';
+import { viewportQualitySettings, type EffectiveRenderQuality } from '../domain/runtimeDiagnostics';
+import type { ReferenceImage } from '../domain/types';
+import { calculateAnkleLocalPosition, calculateHandLocalPosition, calculateHumanoidJointLocalPositions, createNeutralPose } from '../domain/pose';
+import { applyHumanoidPoseToObject, collectHumanoidJointPositions } from '../domain/rigging';
 import { findControllingRelationship } from '../domain/relationships';
 import { resolveSceneAtTime } from '../domain/resolver';
-import type { AssetLibraryCategory, Entity, JointName, PoseState, Relationship, TransformMode, Vec3 } from '../domain/types';
+import { JOINT_NAMES, type AssetLibraryCategory, type Entity, type JointName, type PoseState, type Relationship, type TransformMode, type Vec3 } from '../domain/types';
 import { useEditorStore } from '../store/editorStore';
 
 export type CaptureRenderMode = 'beauty' | 'pose' | 'depth' | 'mask';
@@ -200,8 +203,19 @@ function Humanoid({
 }
 
 
-function normalizeGlbObject(source: Group, category: AssetLibraryCategory, mode: CaptureRenderMode, color: string): Group {
-  const cloned = cloneSkinned(source);
+const glbSceneCache = createAsyncResourceCache<Group>();
+
+async function loadGlbScene(storageKey: string, url: string): Promise<Group> {
+  return glbSceneCache.get(storageKey, async () => {
+    const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+    const gltf = await new GLTFLoader().loadAsync(url);
+    return gltf.scene;
+  });
+}
+
+async function normalizeGlbObject(source: Group, category: AssetLibraryCategory, mode: CaptureRenderMode, color: string): Promise<Group> {
+  const { clone } = await import('three/examples/jsm/utils/SkeletonUtils.js');
+  const cloned = clone(source);
   const initialBox = new Box3().setFromObject(cloned);
   const size = initialBox.getSize(new Vector3());
   const maxDimension = Math.max(size.x, size.y, size.z, 0.0001);
@@ -224,26 +238,67 @@ function normalizeGlbObject(source: Group, category: AssetLibraryCategory, mode:
   return wrapper;
 }
 
-function ImportedGlbShape({ assetId, mode, color, fallback }: { assetId: string; mode: CaptureRenderMode; color: string; fallback: ReactNode }) {
+function ImportedGlbShape({
+  entity,
+  assetId,
+  mode,
+  color,
+  fallback,
+  showJoints,
+  selectedJoint,
+  onSelectJoint,
+}: {
+  entity: Entity;
+  assetId: string;
+  mode: CaptureRenderMode;
+  color: string;
+  fallback: ReactNode;
+  showJoints: boolean;
+  selectedJoint: JointName | null;
+  onSelectJoint(joint: JointName): void;
+}) {
   const item = useEditorStore((state) => state.project.assetLibrary.find((asset) => asset.id === assetId));
   const [object, setObject] = useState<Group | null>(null);
+  const [jointPositions, setJointPositions] = useState<Partial<Record<JointName, Vec3>>>({});
   useEffect(() => {
     let active = true;
     setObject(null);
+    setJointPositions({});
     if (!item) return () => { active = false; };
     getAssetObjectUrl(item.storageKey)
       .then(async (url) => {
         if (!url) return null;
-        const gltf = await new GLTFLoader().loadAsync(url);
-        return normalizeGlbObject(gltf.scene, item.category, mode, color);
+        const source = await loadGlbScene(item.storageKey, url);
+        return normalizeGlbObject(source, item.category, mode, color);
       })
       .then((nextObject) => {
         if (active && nextObject) setObject(nextObject);
       })
       .catch(() => active && setObject(null));
     return () => { active = false; };
-  }, [color, item, mode]);
-  return object ? <primitive object={object} /> : <>{fallback}</>;
+  }, [color, item?.id, item?.storageKey, mode]);
+
+  const poseKey = entity.character ? JSON.stringify(entity.character.pose) : '';
+  const rigKey = item?.rig ? JSON.stringify([item.rig.boneMap, item.rig.axisCorrections]) : '';
+  useEffect(() => {
+    if (!object) return;
+    if (entity.character) applyHumanoidPoseToObject(object, item?.rig, entity.character.pose);
+    setJointPositions(collectHumanoidJointPositions(object, item?.rig));
+  }, [object, item?.rig, poseKey, rigKey]);
+
+  return object ? (
+    <>
+      <primitive object={object} />
+      {showJoints && JOINT_NAMES.map((joint) => {
+        const position = jointPositions[joint];
+        return position ? (
+          <group key={joint} position={position}>
+            <JointHandle name={joint} selected={selectedJoint === joint} onSelect={onSelectJoint} />
+          </group>
+        ) : null;
+      })}
+    </>
+  ) : <>{fallback}</>;
 }
 
 function EntityShape({
@@ -295,7 +350,16 @@ function EntityShape({
   ) : null;
 
   if (modelAssetId && entity.type !== 'camera' && entity.type !== 'light' && renderMode !== 'pose') {
-    return <ImportedGlbShape assetId={modelAssetId} mode={renderMode} color={color} fallback={proxyShape ?? <mesh><boxGeometry args={[1, 1, 1]} /><SurfaceMaterial color={color} mode={renderMode} /></mesh>} />;
+    return <ImportedGlbShape
+      entity={entity}
+      assetId={modelAssetId}
+      mode={renderMode}
+      color={color}
+      fallback={proxyShape ?? <mesh><boxGeometry args={[1, 1, 1]} /><SurfaceMaterial color={color} mode={renderMode} /></mesh>}
+      showJoints={renderMode === 'beauty' && selected && transformMode === 'pose'}
+      selectedJoint={selectedJoint}
+      onSelectJoint={onSelectJoint}
+    />;
   }
 
   if (entity.type === 'character') {
@@ -398,8 +462,12 @@ function SceneEntity({
 function ArmIKTarget({ entity, side }: { entity: Entity; side: 'left' | 'right' }) {
   const targetRef = useRef<Group>(null);
   const applySelectedArmIK = useEditorStore((state) => state.applySelectedArmIK);
+  const proportions = useEditorStore((state) => {
+    const assetId = entity.asset?.modelAssetId;
+    return assetId ? state.project.assetLibrary.find((asset) => asset.id === assetId)?.rig?.proportions : undefined;
+  });
   const pose = entity.character?.pose ?? createNeutralPose();
-  const localHand = useMemo(() => calculateHandLocalPosition(pose, side), [pose, side]);
+  const localHand = useMemo(() => calculateHandLocalPosition(pose, side, proportions), [pose, side, proportions]);
   const matrix = useMemo(() => {
     const quaternion = new Quaternion().setFromEuler(new Euler(...entity.transform.rotation, 'XYZ'));
     return new Matrix4().compose(new Vector3(...entity.transform.position), quaternion, new Vector3(...entity.transform.scale));
@@ -421,6 +489,104 @@ function ArmIKTarget({ entity, side }: { entity: Entity; side: 'left' | 'right' 
   );
 }
 
+
+function JointRotationGizmo({ entity, joint, localPosition }: { entity: Entity; joint: JointName; localPosition: Vec3 }) {
+  const pivotRef = useRef<Group>(null);
+  const updateSelectedJoint = useEditorStore((state) => state.updateSelectedJoint);
+  const currentRotation = entity.character?.pose[joint] ?? [0, 0, 0];
+  const commit = () => {
+    const pivot = pivotRef.current;
+    if (!pivot) return;
+    const delta: Vec3 = [pivot.rotation.x, pivot.rotation.y, pivot.rotation.z];
+    if (Math.abs(delta[0]) + Math.abs(delta[1]) + Math.abs(delta[2]) < 1e-5) return;
+    updateSelectedJoint(joint, [
+      currentRotation[0] + delta[0],
+      currentRotation[1] + delta[1],
+      currentRotation[2] + delta[2],
+    ]);
+  };
+  return (
+    <TransformControls
+      key={`${joint}:${currentRotation.join(':')}`}
+      mode="rotate"
+      space="local"
+      size={0.62}
+      rotationSnap={Math.PI / 36}
+      onMouseUp={commit}
+    >
+      <group ref={pivotRef} position={localPosition}>
+        <mesh visible={false}><sphereGeometry args={[0.04, 8, 6]} /><meshBasicMaterial /></mesh>
+      </group>
+    </TransformControls>
+  );
+}
+
+function SelectedCharacterJointControls({ entity, joint }: { entity: Entity; joint: JointName }) {
+  const item = useEditorStore((state) => {
+    const assetId = entity.asset?.modelAssetId;
+    return assetId ? state.project.assetLibrary.find((asset) => asset.id === assetId) : undefined;
+  });
+  const [importedPositions, setImportedPositions] = useState<Partial<Record<JointName, Vec3>>>({});
+  const pose = entity.character?.pose ?? createNeutralPose();
+  const poseKey = JSON.stringify(pose);
+  const rigKey = item?.rig ? JSON.stringify([item.rig.boneMap, item.rig.axisCorrections]) : '';
+  useEffect(() => {
+    let active = true;
+    setImportedPositions({});
+    if (!item || item.category !== 'character') return () => { active = false; };
+    getAssetObjectUrl(item.storageKey)
+      .then(async (url) => {
+        if (!url) return null;
+        const source = await loadGlbScene(item.storageKey, url);
+        const object = await normalizeGlbObject(source, item.category, 'beauty', '#ffffff');
+        applyHumanoidPoseToObject(object, item.rig, pose);
+        return collectHumanoidJointPositions(object, item.rig);
+      })
+      .then((positions) => { if (active && positions) setImportedPositions(positions); })
+      .catch(() => { if (active) setImportedPositions({}); });
+    return () => { active = false; };
+  }, [item?.id, item?.storageKey, poseKey, rigKey]);
+  const proxyPositions = useMemo(
+    () => calculateHumanoidJointLocalPositions(pose, item?.rig?.proportions),
+    [poseKey, item?.rig?.proportions],
+  );
+  const position = importedPositions[joint] ?? proxyPositions[joint];
+  if (!position) return null;
+  return (
+    <group position={entity.transform.position} rotation={entity.transform.rotation} scale={entity.transform.scale}>
+      <JointRotationGizmo entity={entity} joint={joint} localPosition={position} />
+    </group>
+  );
+}
+
+function LegIKTarget({ entity, side }: { entity: Entity; side: 'left' | 'right' }) {
+  const targetRef = useRef<Group>(null);
+  const applySelectedLegIK = useEditorStore((state) => state.applySelectedLegIK);
+  const proportions = useEditorStore((state) => {
+    const assetId = entity.asset?.modelAssetId;
+    return assetId ? state.project.assetLibrary.find((asset) => asset.id === assetId)?.rig?.proportions : undefined;
+  });
+  const pose = entity.character?.pose ?? createNeutralPose();
+  const localAnkle = useMemo(() => calculateAnkleLocalPosition(pose, side, proportions), [pose, side, proportions]);
+  const matrix = useMemo(() => {
+    const quaternion = new Quaternion().setFromEuler(new Euler(...entity.transform.rotation, 'XYZ'));
+    return new Matrix4().compose(new Vector3(...entity.transform.position), quaternion, new Vector3(...entity.transform.scale));
+  }, [entity.transform.position, entity.transform.rotation, entity.transform.scale]);
+  const worldAnkle = useMemo(() => new Vector3(...localAnkle).applyMatrix4(matrix), [localAnkle, matrix]);
+  const commit = () => {
+    if (!targetRef.current) return;
+    const local = targetRef.current.position.clone().applyMatrix4(matrix.clone().invert());
+    applySelectedLegIK(side, local.toArray() as Vec3);
+  };
+  return (
+    <TransformControls mode="translate" size={0.65} translationSnap={0.05} onMouseUp={commit}>
+      <group ref={targetRef} position={worldAnkle}>
+        <mesh><sphereGeometry args={[0.095, 16, 12]} /><meshBasicMaterial color="#22c55e" depthTest={false} wireframe /></mesh>
+      </group>
+    </TransformControls>
+  );
+}
+
 function RelationshipGuides({ entities, relationships }: { entities: Entity[]; relationships: Relationship[] }) {
   const colors: Record<Relationship['type'], string> = { lookAt: '#22d3ee', hold: '#ec4899', sitOn: '#a78bfa', placeOn: '#34d399' };
   return (
@@ -437,14 +603,49 @@ function RelationshipGuides({ entities, relationships }: { entities: Entity[]; r
   );
 }
 
+
+function TargetedSpotLight({ entity, targetEntity }: { entity: Entity; targetEntity?: Entity }) {
+  const settings = entity.light!;
+  const lightRef = useRef<SpotLight>(null);
+  const targetObject = useMemo(() => new Object3D(), []);
+  useFrame(() => {
+    const light = lightRef.current;
+    if (!light) return;
+    if (targetEntity) targetObject.position.set(...targetEntity.transform.position);
+    else {
+      const forward = new Vector3(0, 0, -1).applyEuler(new Euler(...entity.transform.rotation, 'XYZ'));
+      targetObject.position.set(...entity.transform.position).add(forward.multiplyScalar(Math.max(1, settings.range * 0.5)));
+    }
+    targetObject.updateMatrixWorld();
+    light.target = targetObject;
+  });
+  return (
+    <>
+      <primitive object={targetObject} />
+      <spotLight ref={lightRef} position={entity.transform.position} color={settings.color} intensity={settings.intensity} distance={settings.range} angle={settings.angle} penumbra={0.35} castShadow={settings.castShadow} />
+    </>
+  );
+}
+
+function SceneLight({ entity, entities }: { entity: Entity; entities: Entity[] }) {
+  const settings = entity.light ?? { kind: 'directional' as const, color: '#fff4d6', intensity: 2, range: 12, angle: Math.PI / 4, castShadow: true };
+  if (!entity.visible) return null;
+  if (settings.kind === 'ambient') return <ambientLight color={settings.color} intensity={settings.intensity} />;
+  if (settings.kind === 'point') return <pointLight position={entity.transform.position} color={settings.color} intensity={settings.intensity} distance={settings.range} castShadow={settings.castShadow} />;
+  if (settings.kind === 'spot') return <TargetedSpotLight entity={{ ...entity, light: settings }} targetEntity={entities.find((item) => item.id === settings.targetEntityId)} />;
+  return <directionalLight position={entity.transform.position} color={settings.color} intensity={settings.intensity} castShadow={settings.castShadow} />;
+}
+
 function ShotCameraController({ cameraEntity, enabled }: { cameraEntity?: Entity; enabled: boolean }) {
   const camera = useThree((state) => state.camera);
   useFrame(() => {
     if (!enabled || !cameraEntity) return;
     camera.position.set(...cameraEntity.transform.position);
     camera.rotation.set(...cameraEntity.transform.rotation, 'XYZ');
-    camera.near = 0.1;
-    camera.far = 100;
+    const settings = cameraEntity.camera;
+    camera.near = settings?.near ?? 0.1;
+    camera.far = settings?.far ?? 100;
+    if (camera instanceof PerspectiveCamera) camera.fov = settings?.fov ?? 48;
     camera.updateProjectionMatrix();
   });
   return null;
@@ -465,7 +666,26 @@ function DepthOverride({ enabled }: { enabled: boolean }) {
   return null;
 }
 
-export const Viewport = forwardRef<ViewportHandle>(function Viewport(_props, ref) {
+function ReferenceOverlay({ image }: { image: ReferenceImage }) {
+  const [src, setSrc] = useState<string | null>(image.dataUrl ?? null);
+  useEffect(() => {
+    let active = true;
+    void referenceImageUrl(image).then((url) => { if (active) setSrc(url); });
+    return () => { active = false; };
+  }, [image.storageKey, image.dataUrl]);
+  if (!src) return null;
+  return (
+    <div className={`reference-image-overlay ${image.fit}`} style={{ opacity: image.opacity }}>
+      <img src={src} alt={image.name} />
+    </div>
+  );
+}
+
+interface ViewportProps {
+  qualityProfile?: EffectiveRenderQuality;
+}
+
+export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewport({ qualityProfile = 'balanced' }, ref) {
   const project = useEditorStore((state) => state.project);
   const activeShotId = useEditorStore((state) => state.activeShotId);
   const selectedEntityId = useEditorStore((state) => state.selectedEntityId);
@@ -480,6 +700,7 @@ export const Viewport = forwardRef<ViewportHandle>(function Viewport(_props, ref
   const rendererRef = useRef<RootState | null>(null);
   const captureBusyRef = useRef(false);
   const captureIdRef = useRef(0);
+  const quality = useMemo(() => viewportQualitySettings(qualityProfile), [qualityProfile]);
 
   const scene = project.scenes.find((item) => item.id === project.activeSceneId) ?? project.scenes[0];
   const shot = scene.shots.find((item) => item.id === activeShotId) ?? scene.shots[0];
@@ -490,7 +711,10 @@ export const Viewport = forwardRef<ViewportHandle>(function Viewport(_props, ref
   const selected = entities.find((entity) => entity.id === selectedEntityId) ?? null;
   const activeCamera = entities.find((entity) => entity.id === shot.cameraEntityId && entity.type === 'camera');
   const ikSide = selectedJoint === 'leftWrist' ? 'left' : selectedJoint === 'rightWrist' ? 'right' : null;
+  const legIkSide = selectedJoint === 'leftAnkle' ? 'left' : selectedJoint === 'rightAnkle' ? 'right' : null;
   const cameraEnabled = shotCameraView || captureActive;
+  const sceneLights = entities.filter((entity) => entity.type === 'light' && entity.visible);
+  const activeReferences = (scene.referenceImages ?? []).filter((image) => image.visible && (!image.cameraEntityId || image.cameraEntityId === activeCamera?.id));
 
   useImperativeHandle(ref, () => ({
     captureFrame(time, mode) {
@@ -549,15 +773,17 @@ export const Viewport = forwardRef<ViewportHandle>(function Viewport(_props, ref
     <div className="viewport">
       <Canvas
         camera={{ position: [0, 3.5, 7], fov: 48 }}
-        gl={{ preserveDrawingBuffer: true, antialias: true }}
+        dpr={quality.dpr}
+        gl={{ preserveDrawingBuffer: true, antialias: quality.antialias, powerPreference: quality.powerPreference }}
         onCreated={(state) => { rendererRef.current = state; }}
         onPointerMissed={() => !captureActive && selectEntity(null)}
-        shadows={renderMode === 'beauty'}
+        shadows={renderMode === 'beauty' && quality.shadows}
       >
         <color attach="background" args={[renderMode === 'beauty' ? '#0c0a09' : '#000000']} />
-        {renderMode === 'beauty' && <ambientLight intensity={1.2} />}
-        {renderMode === 'beauty' && <directionalLight position={[4, 8, 4]} intensity={2} castShadow />}
-        {!captureActive && <Grid infiniteGrid fadeDistance={30} sectionColor="#57534e" cellColor="#292524" />}
+        {renderMode === 'beauty' && sceneLights.length === 0 && <ambientLight intensity={1.2} />}
+        {renderMode === 'beauty' && sceneLights.length === 0 && <directionalLight position={[4, 8, 4]} intensity={2} castShadow={quality.shadows} />}
+        {renderMode === 'beauty' && sceneLights.map((entity) => <SceneLight key={`light:${entity.id}`} entity={entity} entities={entities} />)}
+        {!captureActive && quality.showInfiniteGrid && <Grid infiniteGrid fadeDistance={30} sectionColor="#57534e" cellColor="#292524" />}
         <DepthOverride enabled={renderMode === 'depth'} />
         <ShotCameraController cameraEntity={activeCamera} enabled={cameraEnabled} />
         {visibleEntities.map((entity) => (
@@ -571,11 +797,24 @@ export const Viewport = forwardRef<ViewportHandle>(function Viewport(_props, ref
           />
         ))}
         {!captureActive && <RelationshipGuides entities={entities} relationships={shot.relationships} />}
-        {!captureActive && transformMode === 'pose' && selected?.type === 'character' && ikSide && !selected.locked && (
+        {!captureActive && transformMode === 'pose' && selected?.type === 'character' && selectedJoint && !selected.locked && playheadTime === 0 && !isPlaying && (
+          <SelectedCharacterJointControls entity={selected} joint={selectedJoint} />
+        )}
+        {!captureActive && transformMode === 'pose' && selected?.type === 'character' && ikSide && !selected.locked && playheadTime === 0 && !isPlaying && (
           <ArmIKTarget entity={selected} side={ikSide} />
+        )}
+        {!captureActive && transformMode === 'pose' && selected?.type === 'character' && legIkSide && !selected.locked && playheadTime === 0 && !isPlaying && (
+          <LegIKTarget entity={selected} side={legIkSide} />
         )}
         <OrbitControls makeDefault enabled={!cameraEnabled && !captureActive} />
       </Canvas>
+
+      {!captureActive && shotCameraView && activeReferences.map((image) => (
+        <ReferenceOverlay key={image.id} image={image} />
+      ))}
+      {!captureActive && shotCameraView && activeCamera?.camera?.showSafeFrame && (
+        <div className={`camera-safe-frame ratio-${activeCamera.camera.aspectRatio.replace(':', '-')}`}><span>SAFE FRAME · {activeCamera.camera.aspectRatio}</span></div>
+      )}
 
       <div className="viewport-toolbar" aria-label="변환 도구">
         <button className={!shotCameraView ? 'active' : ''} onClick={() => setShotCameraView(false)}>자유 시점</button>
@@ -588,7 +827,7 @@ export const Viewport = forwardRef<ViewportHandle>(function Viewport(_props, ref
       </div>
 
       <div className="viewport-badge">
-        {shotCameraView ? '샷 카메라' : '자유 시점'} · 선택: {selected?.name ?? '없음'} · Shot: {shot.name}
+        {shotCameraView ? '샷 카메라' : '자유 시점'} · {quality.profile} · 선택: {selected?.name ?? '없음'} · Shot: {shot.name}
         {transformMode === 'pose' && selectedJoint ? ` · 관절: ${selectedJoint}` : ''}
         {selected && findControllingRelationship(shot.relationships, selected.id) ? ' · 관계 제어 중' : ''}
         {playheadTime > 0 ? ` · ${playheadTime.toFixed(2)}초 미리보기` : ''}
@@ -597,8 +836,12 @@ export const Viewport = forwardRef<ViewportHandle>(function Viewport(_props, ref
         <div className="viewport-hint">{renderMode} 제어 프레임을 캡처하고 있습니다.</div>
       ) : playheadTime > 0 ? (
         <div className="viewport-hint">타임라인 미리보기 중에는 직접 변형이 잠깁니다. 0초로 이동해 편집하세요.</div>
+      ) : transformMode === 'pose' && legIkSide ? (
+        <div className="viewport-hint">회전 링으로 관절을 돌리거나 초록색 목표점을 끌어 {legIkSide === 'left' ? '왼발' : '오른발'} IK를 조절하세요.</div>
       ) : transformMode === 'pose' && ikSide ? (
-        <div className="viewport-hint">분홍색 목표점을 끌어 {ikSide === 'left' ? '왼손' : '오른손'} IK를 조절하세요.</div>
+        <div className="viewport-hint">회전 링으로 관절을 돌리거나 분홍색 목표점을 끌어 {ikSide === 'left' ? '왼손' : '오른손'} IK를 조절하세요.</div>
+      ) : transformMode === 'pose' && selectedJoint ? (
+        <div className="viewport-hint">선택 관절의 회전 링을 직접 드래그해 포즈를 조절하세요.</div>
       ) : null}
     </div>
   );

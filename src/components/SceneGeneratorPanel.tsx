@@ -3,6 +3,21 @@ import { analyzeScenePrompt, type SceneGenerationPlan } from '../domain/sceneGen
 
 const EXAMPLE_PROMPT = `비 오는 밤의 편의점 앞이다. 검은 코트를 입은 여성과 교복을 입은 남학생이 마주 보고 있다. 여성은 우산을 들고 있고 남학생은 자전거 옆에 서 있다. 처음에는 두 사람이 함께 보이는 와이드 샷, 다음은 여성의 얼굴 클로즈업, 마지막에는 남학생이 자전거를 타고 떠나는 트래킹 샷으로 만들어줘.`;
 
+const SCENE_TEMPLATES = [
+  {
+    id: 'dialogue', name: '2인 대화', description: '공간·시선·오버숄더와 클로즈업',
+    prompt: '따뜻한 저녁의 작은 카페. 지윤과 민수가 창가 테이블을 사이에 두고 마주 앉아 조용히 대화한다. 테이블 위에는 커피 두 잔이 있다. 처음에는 두 사람이 보이는 와이드 샷, 다음은 지윤의 오버숄더, 마지막은 민수의 표정 클로즈업으로 구성해줘.',
+  },
+  {
+    id: 'product', name: '제품 연출', description: '소품 중심 인서트와 카메라 이동',
+    prompt: '어두운 스튜디오의 검은 테이블 위에 은색 헤드폰이 놓여 있다. 차가운 림 라이트와 부드러운 키 라이트를 사용한다. 처음에는 제품 전체가 보이는 미디엄 샷, 다음은 재질이 보이는 인서트, 마지막에는 카메라가 천천히 다가가는 클로즈업으로 만들어줘.',
+  },
+  {
+    id: 'action', name: '인물 동작', description: '걷기·소품 집기·트래킹 샷',
+    prompt: '낮의 도심 거리. 빨간 재킷을 입은 여성이 벤치 위의 가방을 집어 들고 앞으로 걸어간다. 처음에는 거리와 인물이 보이는 와이드 샷, 다음은 가방을 집는 손 인서트, 마지막은 여성을 따라가는 트래킹 샷으로 구성해줘.',
+  },
+] as const;
+
 interface SceneGeneratorPanelProps {
   open: boolean;
   onClose(): void;
@@ -116,6 +131,13 @@ export function SceneGeneratorPanel({ open, onClose, onApply }: SceneGeneratorPa
             </label>
             <div className="prompt-hints">
               <span>인물</span><span>소품</span><span>장소·날씨</span><span>샷 순서</span><span>행동</span>
+            </div>
+            <div className="scene-template-list" aria-label="대표 장면 템플릿">
+              {SCENE_TEMPLATES.map((template) => (
+                <button key={template.id} onClick={() => { setPrompt(template.prompt); setAnalyzedPrompt(template.prompt); }}>
+                  <strong>{template.name}</strong><span>{template.description}</span>
+                </button>
+              ))}
             </div>
             <button className="analyze-button" onClick={analyze}>장면 해석 갱신</button>
             <p className="replacement-warning">적용하면 현재 씬이 새 구성으로 교체됩니다. 한 번의 Transaction으로 기록되어 실행 취소할 수 있습니다.</p>

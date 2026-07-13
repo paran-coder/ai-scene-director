@@ -1,0 +1,53 @@
+{
+  "version": "1.0.0-rc.9",
+  "releaseId": "local-1.0.0-rc.9",
+  "commitSha": null,
+  "runId": null,
+  "runAttempt": null,
+  "platform": "linux",
+  "generatedAt": "2026-07-13T02:36:54.651Z",
+  "result": "pass",
+  "budgets": {
+    "mainChunkBytes": 233129,
+    "mainChunkLimitBytes": 266240,
+    "threeCoreBytes": 748377,
+    "threeCoreLimitBytes": 819200
+  },
+  "lazyChunks": [
+    {
+      "name": "AssetLibraryPanel-pEdMvV6g.js",
+      "bytes": 8314
+    },
+    {
+      "name": "ComfyPanel-B0YkJvEP.js",
+      "bytes": 15123
+    },
+    {
+      "name": "ProjectDoctorPanel-DDLlVely.js",
+      "bytes": 19917
+    },
+    {
+      "name": "SceneGeneratorPanel-5Bz-Fj54.js",
+      "bytes": 6787
+    }
+  ],
+  "desktopTargets": [
+    "linux",
+    "windows",
+    "macos"
+  ],
+  "fixtures": [
+    {
+      "name": "humanoid-smoke.glb",
+      "bytes": 1508
+    },
+    {
+      "name": "humanoid-vrm-smoke.glb",
+      "bytes": 972
+    },
+    {
+      "name": "humanoid-generic-smoke.glb",
+      "bytes": 852
+    }
+  ]
+}

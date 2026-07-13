@@ -1,0 +1,29 @@
+{
+  "version": "1.0.0-rc.9",
+  "releaseId": "local-1.0.0-rc.9",
+  "commitSha": null,
+  "runId": null,
+  "runAttempt": null,
+  "platform": "linux",
+  "generatedAt": "2026-07-13T02:36:59.233Z",
+  "status": "pass",
+  "strict": false,
+  "browserPath": "/usr/bin/chromium",
+  "url": "http://127.0.0.1:36663/?smoke=1",
+  "executionMode": "cdp-injected",
+  "injectedBundle": {
+    "scriptBytes": 1504214,
+    "styleBytes": 40565
+  },
+  "runtimeStatus": "unsupported",
+  "safeMode": true,
+  "title": "AI Scene Director Smoke",
+  "interaction": {
+    "commandPaletteOpen": true,
+    "commandInputFocused": true,
+    "commandCount": 21,
+    "buttonCount": 96
+  },
+  "screenshot": "dist/browser-smoke.png",
+  "durationMs": 4295
+}

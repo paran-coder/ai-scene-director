@@ -1,0 +1,18 @@
+[package]
+name = "ai-scene-director"
+version = "1.0.0-rc.9"
+description = "Local-first AI scene and shot director"
+authors = ["AI Scene Director"]
+edition = "2021"
+
+[lib]
+name = "ai_scene_director_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+rfd = "0.15"

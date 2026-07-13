@@ -1,0 +1,48 @@
+{
+  "generatedAt": "2026-07-13T02:07:33.931Z",
+  "version": "1.0.0-rc.9",
+  "result": "pass",
+  "budgets": {
+    "mainChunkBytes": 233129,
+    "mainChunkLimitBytes": 266240,
+    "threeCoreBytes": 748377,
+    "threeCoreLimitBytes": 819200
+  },
+  "lazyChunks": [
+    {
+      "name": "AssetLibraryPanel-B2KY5Ajd.js",
+      "bytes": 8314
+    },
+    {
+      "name": "ComfyPanel-B0YkJvEP.js",
+      "bytes": 15123
+    },
+    {
+      "name": "ProjectDoctorPanel-Bd3ZBZC_.js",
+      "bytes": 19917
+    },
+    {
+      "name": "SceneGeneratorPanel-EeU-Devg.js",
+      "bytes": 6787
+    }
+  ],
+  "desktopTargets": [
+    "linux",
+    "windows",
+    "macos"
+  ],
+  "fixtures": [
+    {
+      "name": "humanoid-smoke.glb",
+      "bytes": 1508
+    },
+    {
+      "name": "humanoid-vrm-smoke.glb",
+      "bytes": 972
+    },
+    {
+      "name": "humanoid-generic-smoke.glb",
+      "bytes": 852
+    }
+  ]
+}

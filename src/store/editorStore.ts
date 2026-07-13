@@ -1,7 +1,7 @@
 import { create } from 'zustand';
-import { ACTION_DEFAULT_DURATION, ACTION_LABELS } from '../domain/actions';
+import { ACTION_DEFAULT_DURATION, ACTION_LABELS, collectActionConflicts, findActionConflicts } from '../domain/actions';
 import { persist } from 'zustand/middleware';
-import { findPosePreset, createNeutralPose, mirrorPose, solveArmIK } from '../domain/pose';
+import { findPosePreset, createNeutralPose, groundFeet, mirrorPose, solveArmIK, solveLegIK } from '../domain/pose';
 import { resolveEntity, resolveEntityWithoutRelationships, resolveSceneAtTime } from '../domain/resolver';
 import { sampleProject } from '../domain/sampleProject';
 import { applyTransaction, revertTransaction } from '../domain/transactions';
@@ -10,6 +10,9 @@ import type {
   AssetLibraryItem,
   ActionParameters,
   ActionType,
+  CameraData,
+  LightData,
+  ReferenceImage,
   Entity,
   EntityType,
   GenerationResult,
@@ -62,12 +65,22 @@ interface EditorState {
   resetSelectedPose(): void;
   mirrorSelectedPose(): void;
   applySelectedArmIK(side: 'left' | 'right', target: Vec3): void;
+  applySelectedLegIK(side: 'left' | 'right', target: Vec3): void;
+  groundSelectedFeet(): void;
 
   addSelectedRelationship(type: RelationshipType, targetEntityId: string, parameters?: RelationshipParameters): void;
   removeRelationship(relationshipId: string): void;
 
   addAction(type: ActionType, actorEntityId: string, targetEntityId?: string, parameters?: ActionParameters): void;
   updateSelectedAction(patch: Partial<ActionBlock>): void;
+  updateActionTiming(actionId: string, startTime: number, duration: number): void;
+  shiftActions(actionIds: string[], deltaSeconds: number): void;
+  removeActions(actionIds: string[]): void;
+  updateSelectedCamera(patch: Partial<CameraData>): void;
+  updateSelectedLight(patch: Partial<LightData>): void;
+  addReferenceImage(image: ReferenceImage): void;
+  updateReferenceImage(imageId: string, patch: Partial<ReferenceImage>): void;
+  removeReferenceImage(imageId: string): void;
   removeSelectedAction(): void;
   addGenerationResult(result: GenerationResult): void;
   removeGenerationResult(resultId: string): void;
@@ -86,6 +99,7 @@ interface EditorState {
 
   replaceActiveSceneFromPrompt(prompt: string): void;
   registerAsset(item: AssetLibraryItem): void;
+  updateAssetItem(item: AssetLibraryItem): void;
   assignAssetToSelected(assetId: string): void;
   clearSelectedModelAsset(): void;
   removeAsset(assetId: string): void;
@@ -149,6 +163,8 @@ function createDefaultEntity(type: EntityType, index: number): Entity {
       pose: createNeutralPose(),
       appearance: { role: 'supporting', descriptor: `${labels[type]} ${index + 1}`, ageGroup: 'unspecified', presentation: 'unspecified', outfitSummary: '기본 의상', outfitColors: ['#64748b'], hairColor: '#1c1917', skinTone: '#d6a77a' },
     } : undefined,
+    camera: type === 'camera' ? { projection: 'perspective', fov: 48, near: 0.1, far: 100, aspectRatio: '16:9', showSafeFrame: true } : undefined,
+    light: type === 'light' ? { kind: 'directional', color: '#fff4d6', intensity: 2, range: 12, angle: Math.PI / 4, castShadow: true } : undefined,
     asset: {
       category: type === 'prop' ? 'generic' : type === 'light' ? 'lighting' : 'generic',
       primitive: type === 'light' ? 'sphere' : 'box',
@@ -214,6 +230,14 @@ function conflictingRelationships(
     return false;
   });
 }
+function describeActionConflict(actions: ActionBlock[], candidate: ActionBlock, entities: Entity[]): string | null {
+  const conflict = findActionConflicts(actions, candidate)[0];
+  if (!conflict) return null;
+  const other = actions.find((item) => item.id === conflict.conflictingActionId);
+  const resource = entities.find((item) => item.id === conflict.resourceEntityId)?.name ?? '같은 객체';
+  return `${resource}의 ${other ? ACTION_LABELS[other.type] : '다른 행동'}과 시간이 겹칩니다.`;
+}
+
 
 export const useEditorStore = create<EditorState>()(
   persist(
@@ -390,7 +414,34 @@ export const useEditorStore = create<EditorState>()(
           const shot = currentShot(state);
           const resolved = resolveEntityWithoutRelationships(scene, shot, state.selectedEntityId);
           if (!resolved.character) return;
-          get().updateSelectedPose(solveArmIK(resolved.character.pose, side, target), `${side === 'left' ? '왼손' : '오른손'} IK 적용`);
+          const assetId = resolved.asset?.modelAssetId;
+          const proportions = assetId ? state.project.assetLibrary.find((item) => item.id === assetId)?.rig?.proportions : undefined;
+          get().updateSelectedPose(solveArmIK(resolved.character.pose, side, target, proportions), `${side === 'left' ? '왼손' : '오른손'} 비율 보정 IK 적용`);
+        },
+
+        applySelectedLegIK: (side, target) => {
+          const state = get();
+          if (!state.selectedEntityId) return;
+          const scene = currentScene(state);
+          const shot = currentShot(state);
+          const resolved = resolveEntityWithoutRelationships(scene, shot, state.selectedEntityId);
+          if (!resolved.character) return;
+          const assetId = resolved.asset?.modelAssetId;
+          const proportions = assetId ? state.project.assetLibrary.find((item) => item.id === assetId)?.rig?.proportions : undefined;
+          get().updateSelectedPose(solveLegIK(resolved.character.pose, side, target, proportions), `${side === 'left' ? '왼발' : '오른발'} 비율 보정 IK 적용`);
+        },
+
+        groundSelectedFeet: () => {
+          const state = get();
+          if (!state.selectedEntityId) return;
+          const scene = currentScene(state);
+          const shot = currentShot(state);
+          const resolved = resolveEntityWithoutRelationships(scene, shot, state.selectedEntityId);
+          if (!resolved.character) return;
+          const assetId = resolved.asset?.modelAssetId;
+          const proportions = assetId ? state.project.assetLibrary.find((item) => item.id === assetId)?.rig?.proportions : undefined;
+          const localGround = -resolved.transform.position[1] / Math.max(0.001, Math.abs(resolved.transform.scale[1]));
+          get().updateSelectedPose(groundFeet(resolved.character.pose, proportions, localGround), '양발 지면 고정');
         },
 
         addSelectedRelationship: (type, targetEntityId, parameters = {}) => {
@@ -502,6 +553,8 @@ export const useEditorStore = create<EditorState>()(
             parameters: structuredClone(parameters),
             enabled: true,
           };
+          const conflictMessage = describeActionConflict(shot.actions ?? [], action, scene.entities);
+          if (conflictMessage) { set({ message: conflictMessage }); return; }
           commit(transaction(`${ACTION_LABELS[type]} 행동 추가`, [{ type: 'addAction', sceneId: scene.id, shotId: shot.id, action } ]));
           set({ selectedActionId: action.id });
         },
@@ -517,10 +570,133 @@ export const useEditorStore = create<EditorState>()(
           nextAction.startTime = Math.max(0, Math.min(shot.duration - 0.1, nextAction.startTime));
           nextAction.duration = Math.max(0.1, Math.min(shot.duration - nextAction.startTime, nextAction.duration));
           if (JSON.stringify(action) === JSON.stringify(nextAction)) return;
+          const conflictMessage = describeActionConflict(shot.actions ?? [], nextAction, scene.entities);
+          if (conflictMessage) { set({ message: conflictMessage }); return; }
           commit(transaction(`${ACTION_LABELS[action.type]} 행동 수정`, [{
             type: 'updateAction', sceneId: scene.id, shotId: shot.id,
             previousAction: structuredClone(action), nextAction,
           }]));
+        },
+
+        updateActionTiming: (actionId, startTime, duration) => {
+          const state = get();
+          const scene = currentScene(state);
+          const shot = currentShot(state);
+          const action = (shot.actions ?? []).find((item) => item.id === actionId);
+          if (!action) return;
+          const nextAction = structuredClone(action);
+          nextAction.startTime = Math.max(0, Math.min(shot.duration - 0.1, Number.isFinite(startTime) ? startTime : action.startTime));
+          nextAction.duration = Math.max(0.1, Math.min(shot.duration - nextAction.startTime, Number.isFinite(duration) ? duration : action.duration));
+          const conflictMessage = describeActionConflict(shot.actions ?? [], nextAction, scene.entities);
+          if (conflictMessage) { set({ message: conflictMessage }); return; }
+          if (Math.abs(nextAction.startTime - action.startTime) < 1e-6 && Math.abs(nextAction.duration - action.duration) < 1e-6) return;
+          commit(transaction(`${ACTION_LABELS[action.type]} 시간 변경`, [{ type: 'updateAction', sceneId: scene.id, shotId: shot.id, previousAction: structuredClone(action), nextAction }]));
+          set({ selectedActionId: action.id, playheadTime: nextAction.startTime });
+        },
+
+        shiftActions: (actionIds, deltaSeconds) => {
+          const state = get();
+          const scene = currentScene(state);
+          const shot = currentShot(state);
+          const ids = new Set(actionIds);
+          const selectedActions = (shot.actions ?? []).filter((action) => ids.has(action.id));
+          if (!selectedActions.length || !Number.isFinite(deltaSeconds)) return;
+          const minStart = Math.min(...selectedActions.map((action) => action.startTime));
+          const maxEnd = Math.max(...selectedActions.map((action) => action.startTime + action.duration));
+          const clampedDelta = Math.max(-minStart, Math.min(shot.duration - maxEnd, deltaSeconds));
+          if (Math.abs(clampedDelta) < 1e-6) return;
+          const replacements = new Map(selectedActions.map((action) => [action.id, { ...structuredClone(action), startTime: Math.round((action.startTime + clampedDelta) * 20) / 20 }]));
+          const candidateActions = (shot.actions ?? []).map((action) => replacements.get(action.id) ?? action);
+          if (collectActionConflicts(candidateActions).length > 0) {
+            set({ message: '선택한 행동을 이동하면 다른 행동과 시간이 겹칩니다.' });
+            return;
+          }
+          const operations = selectedActions.map((action) => ({
+            type: 'updateAction' as const, sceneId: scene.id, shotId: shot.id,
+            previousAction: structuredClone(action), nextAction: replacements.get(action.id)!,
+          }));
+          commit(transaction(`${selectedActions.length}개 행동 시간 이동`, operations));
+          set({ playheadTime: Math.max(0, minStart + clampedDelta) });
+        },
+
+        removeActions: (actionIds) => {
+          const state = get();
+          const scene = currentScene(state);
+          const shot = currentShot(state);
+          const ids = new Set(actionIds);
+          const actions = (shot.actions ?? []).filter((action) => ids.has(action.id));
+          if (!actions.length) return;
+          commit(transaction(`${actions.length}개 행동 삭제`, actions.map((action) => ({
+            type: 'removeAction' as const, sceneId: scene.id, shotId: shot.id, action: structuredClone(action),
+          }))));
+          set({ selectedActionId: null });
+        },
+
+        updateSelectedCamera: (patch) => {
+          const state = get();
+          if (!state.selectedEntityId) return;
+          const scene = currentScene(state);
+          const shot = currentShot(state);
+          const base = scene.entities.find((item) => item.id === state.selectedEntityId);
+          if (!base || base.type !== 'camera') return;
+          if (base.locked) { set({ message: `${base.name}은(는) 잠겨 있습니다.` }); return; }
+          const resolved = resolveEntityWithoutRelationships(scene, shot, base.id);
+          const previousValue: CameraData = structuredClone(resolved.camera ?? { projection: 'perspective', fov: 48, near: 0.1, far: 100, aspectRatio: '16:9', showSafeFrame: true });
+          const nextValue: CameraData = { ...previousValue, ...structuredClone(patch) };
+          nextValue.fov = Math.max(10, Math.min(140, nextValue.fov));
+          nextValue.near = Math.max(0.01, nextValue.near);
+          nextValue.far = Math.max(nextValue.near + 0.1, nextValue.far);
+          if (JSON.stringify(previousValue) === JSON.stringify(nextValue)) return;
+          commit(transaction(`${base.name} Shot 렌즈 설정 변경`, [{ type: 'updateEntity', sceneId: scene.id, shotId: shot.id, entityId: base.id, path: 'camera.settings', previousValue, nextValue }]));
+        },
+
+        updateSelectedLight: (patch) => {
+          const state = get();
+          if (!state.selectedEntityId) return;
+          const scene = currentScene(state);
+          const shot = currentShot(state);
+          const base = scene.entities.find((item) => item.id === state.selectedEntityId);
+          if (!base || base.type !== 'light') return;
+          if (base.locked) { set({ message: `${base.name}은(는) 잠겨 있습니다.` }); return; }
+          const resolved = resolveEntityWithoutRelationships(scene, shot, base.id);
+          const previousValue: LightData = structuredClone(resolved.light ?? { kind: 'directional', color: '#fff4d6', intensity: 2, range: 12, angle: Math.PI / 4, castShadow: true });
+          const nextValue: LightData = { ...previousValue, ...structuredClone(patch) };
+          if (nextValue.targetEntityId === base.id || (nextValue.targetEntityId && !scene.entities.some((entity) => entity.id === nextValue.targetEntityId))) delete nextValue.targetEntityId;
+          nextValue.intensity = Math.max(0, Math.min(50, nextValue.intensity));
+          nextValue.range = Math.max(0, Math.min(200, nextValue.range));
+          nextValue.angle = Math.max(0.05, Math.min(Math.PI, nextValue.angle));
+          if (JSON.stringify(previousValue) === JSON.stringify(nextValue)) return;
+          commit(transaction(`${base.name} Shot 조명 설정 변경`, [{ type: 'updateEntity', sceneId: scene.id, shotId: shot.id, entityId: base.id, path: 'light.settings', previousValue, nextValue }]));
+        },
+
+        addReferenceImage: (image) => {
+          const state = get();
+          const scene = currentScene(state);
+          if ((scene.referenceImages ?? []).some((item) => item.id === image.id)) return;
+          const existing = scene.referenceImages ?? [];
+          if (existing.length >= 30) { set({ message: '프로젝트당 참조 이미지는 최대 30개까지 지원합니다.' }); return; }
+          const totalBytes = existing.reduce((sum, item) => sum + item.sizeBytes, 0) + image.sizeBytes;
+          if (totalBytes > 50_000_000) { set({ message: '참조 이미지 로컬 에셋 총량은 50MB까지 지원합니다.' }); return; }
+          commit(transaction(`${image.name} 참조 이미지 추가`, [{ type: 'addReferenceImage', sceneId: scene.id, image: structuredClone(image) }]));
+        },
+
+        updateReferenceImage: (imageId, patch) => {
+          const state = get();
+          const scene = currentScene(state);
+          const image = (scene.referenceImages ?? []).find((item) => item.id === imageId);
+          if (!image) return;
+          const nextImage: ReferenceImage = { ...structuredClone(image), ...structuredClone(patch) };
+          nextImage.opacity = Math.max(0, Math.min(1, nextImage.opacity));
+          if (JSON.stringify(image) === JSON.stringify(nextImage)) return;
+          commit(transaction(`${image.name} 참조 이미지 수정`, [{ type: 'updateReferenceImage', sceneId: scene.id, previousImage: structuredClone(image), nextImage }]));
+        },
+
+        removeReferenceImage: (imageId) => {
+          const state = get();
+          const scene = currentScene(state);
+          const image = (scene.referenceImages ?? []).find((item) => item.id === imageId);
+          if (!image) return;
+          commit(transaction(`${image.name} 참조 이미지 삭제`, [{ type: 'removeReferenceImage', sceneId: scene.id, image: structuredClone(image) }]));
         },
 
         removeSelectedAction: () => {
@@ -587,6 +763,17 @@ export const useEditorStore = create<EditorState>()(
             overridesByShot: overridesForEntity(scene.shots, entity.id),
             relationshipsByShot: relationshipsForEntity(scene.shots, entity.id),
             actionsByShot: actionsForEntity(scene.shots, entity.id),
+            referenceImages: structuredClone((scene.referenceImages ?? []).filter((image) => image.cameraEntityId === entity.id)),
+            lightTargetBackups: scene.entities
+              .filter((light) => light.type === 'light' && (
+                light.light?.targetEntityId === entity.id
+                || scene.shots.some((shot) => shot.overrides.some((override) => override.entityId === light.id && override.path === 'light.settings' && (override.value as LightData).targetEntityId === entity.id))
+              ))
+              .map((light) => ({
+                lightEntityId: light.id,
+                baseLight: light.light ? structuredClone(light.light) : undefined,
+                overridesByShot: Object.fromEntries(scene.shots.map((shot) => [shot.id, structuredClone(shot.overrides.filter((override) => override.entityId === light.id && override.path === 'light.settings'))])),
+              })),
           }]), null);
         },
 
@@ -738,6 +925,14 @@ export const useEditorStore = create<EditorState>()(
           commit(transaction(`${item.name} GLB 에셋 등록`, [{ type: 'addAssetLibraryItem', item: structuredClone(item) }]));
         },
 
+        updateAssetItem: (item) => {
+          const state = get();
+          const previousItem = state.project.assetLibrary.find((asset) => asset.id === item.id);
+          if (!previousItem) { set({ message: '수정할 에셋을 찾지 못했습니다.' }); return; }
+          if (JSON.stringify(previousItem) === JSON.stringify(item)) return;
+          commit(transaction(`${item.name} GLB 분석 정보 갱신`, [{ type: 'updateAssetLibraryItem', previousItem: structuredClone(previousItem), nextItem: structuredClone(item) }]));
+        },
+
         assignAssetToSelected: (assetId) => {
           const state = get();
           if (!state.selectedEntityId) return;
@@ -822,7 +1017,7 @@ export const useEditorStore = create<EditorState>()(
             previousScene: structuredClone(previousScene),
             nextScene: structuredClone(nextScene),
           }]), nextSelection, nextShotId);
-          set({ playheadTime: 0, isPlaying: false, selectedActionId: null, selectedJoint: nextScene.entities.find((entity) => entity.id === nextSelection)?.type === 'character' ? 'rightShoulder' : null });
+          set({ playheadTime: 0, isPlaying: false, transformMode: 'translate', selectedActionId: null, selectedJoint: nextScene.entities.find((entity) => entity.id === nextSelection)?.type === 'character' ? 'rightShoulder' : null });
         },
 
         importProject: (project) => {
@@ -949,7 +1144,7 @@ export const useEditorStore = create<EditorState>()(
           selectedActionId: null,
           undoStack: [],
           redoStack: [],
-          message: result.warnings.length ? `저장된 프로젝트를 0.10.0으로 변환했습니다.` : null,
+          message: result.warnings.length ? `저장된 프로젝트를 0.13.0으로 변환했습니다.` : null,
         };
       },
     },

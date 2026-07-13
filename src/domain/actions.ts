@@ -1,5 +1,5 @@
 import { Euler, Matrix4, Quaternion, Vector3 } from 'three';
-import { calculateHandLocalPosition } from './pose.ts';
+import { calculateAnkleLocalPosition, calculateHandLocalPosition, solveLegIK } from './pose.ts';
 import type { ActionBlock, ActionType, Entity, Relationship, Vec3 } from './types.ts';
 
 export const ACTION_LABELS: Record<ActionType, string> = {
@@ -88,25 +88,86 @@ function addOrReplaceRelationship(relationships: Relationship[], relationship: R
   return [...withoutConflicts, relationship];
 }
 
+function shortestAngleDelta(from: number, to: number): number {
+  let delta = (to - from + Math.PI) % (Math.PI * 2) - Math.PI;
+  if (delta < -Math.PI) delta += Math.PI * 2;
+  return delta;
+}
+
+function facingYaw(direction: Vector3): number {
+  return Math.atan2(-direction.x, -direction.z);
+}
+
 function animateWalk(entity: Entity, action: ActionBlock, progress: number): void {
   const eased = smoothstep(progress);
   const direction = normalizedDirection(action.parameters.direction);
-  const distance = action.parameters.distance ?? 1.5;
-  entity.transform.position = new Vector3(...entity.transform.position)
-    .add(direction.multiplyScalar(distance * eased))
+  direction.y = 0;
+  if (direction.lengthSq() < 1e-8) direction.set(0, 0, -1);
+  direction.normalize();
+  const distance = Math.max(0.05, action.parameters.distance ?? 1.5);
+  const strideLength = Math.max(0.25, Math.min(1.4, action.parameters.strideLength ?? 0.72));
+  const stepHeight = Math.max(0.02, Math.min(0.35, action.parameters.stepHeight ?? 0.11));
+  const cadence = Math.max(0.5, Math.min(3.5, action.parameters.cadence ?? 1.8));
+  const bodyLean = Math.max(-0.3, Math.min(0.45, action.parameters.bodyLean ?? 0.08));
+  const startPosition = new Vector3(...entity.transform.position);
+  const startYaw = entity.transform.rotation[1];
+  const desiredYaw = facingYaw(direction);
+  const turnProgress = smoothstep(Math.min(1, progress * 3));
+  entity.transform.rotation = [
+    entity.transform.rotation[0],
+    startYaw + shortestAngleDelta(startYaw, desiredYaw) * turnProgress,
+    entity.transform.rotation[2],
+  ];
+  entity.transform.position = startPosition.clone()
+    .add(direction.clone().multiplyScalar(distance * eased))
     .toArray() as Vec3;
 
   if (entity.type === 'character' && entity.character && progress > 0 && progress < 1) {
-    const phase = progress * Math.PI * 4;
-    const swing = Math.sin(phase) * 0.55;
-    const knee = Math.max(0, Math.sin(phase + Math.PI / 2)) * 0.65;
-    entity.character.pose.leftShoulder = [swing, 0, entity.character.pose.leftShoulder[2]];
-    entity.character.pose.rightShoulder = [-swing, 0, entity.character.pose.rightShoulder[2]];
-    entity.character.pose.leftHip = [-swing * 0.7, 0, 0];
-    entity.character.pose.rightHip = [swing * 0.7, 0, 0];
-    entity.character.pose.leftKnee = [knee, 0, 0];
-    entity.character.pose.rightKnee = [Math.max(0, -Math.sin(phase + Math.PI / 2)) * 0.65, 0, 0];
-    entity.character.pose.pelvis = [0, 0, Math.sin(phase * 2) * 0.03];
+    const distanceCycles = Math.max(1, Math.ceil(distance / strideLength));
+    const cadenceCycles = Math.max(1, Math.round(action.duration * cadence * 0.5));
+    const cycles = Math.max(distanceCycles, cadenceCycles);
+    const cycle = progress * cycles;
+    const stride = distance / cycles;
+    const pose = structuredClone(entity.character.pose);
+    const armPhase = cycle * Math.PI * 2;
+    const gaitEnvelope = Math.sin(Math.PI * clamp01(progress));
+    const armSwing = Math.sin(armPhase) * 0.42 * gaitEnvelope;
+    const verticalPulse = Math.sin(armPhase * 2) * 0.035 * gaitEnvelope;
+    const sideSway = Math.sin(armPhase) * 0.035 * gaitEnvelope;
+    pose.pelvis = [pose.pelvis[0] + verticalPulse, pose.pelvis[1], pose.pelvis[2] + sideSway];
+    pose.spine = [pose.spine[0] + bodyLean * gaitEnvelope, pose.spine[1], pose.spine[2] - sideSway * 0.5];
+    pose.chest = [pose.chest[0] - bodyLean * 0.35 * gaitEnvelope, pose.chest[1], pose.chest[2] + sideSway * 0.35];
+    pose.leftShoulder = [armSwing, 0, pose.leftShoulder[2]];
+    pose.rightShoulder = [-armSwing, 0, pose.rightShoulder[2]];
+    pose.leftElbow = [Math.max(0, -armSwing) * 0.35, 0, pose.leftElbow[2]];
+    pose.rightElbow = [Math.max(0, armSwing) * 0.35, 0, pose.rightElbow[2]];
+
+    const currentMatrix = composeEntityMatrix(entity);
+    const inverseCurrent = currentMatrix.clone().invert();
+    const yawQuaternion = new Quaternion().setFromEuler(new Euler(0, entity.transform.rotation[1], 0));
+    const lateralWorld = new Vector3(1, 0, 0).applyQuaternion(yawQuaternion);
+    let solved = pose;
+    for (const side of ['left', 'right'] as const) {
+      const phaseOffset = side === 'left' ? 0 : 0.5;
+      const shifted = cycle + phaseOffset;
+      const stepIndex = Math.floor(shifted);
+      const phase = shifted - stepIndex;
+      const fromDistance = Math.min(distance, stepIndex * stride);
+      const toDistance = Math.min(distance, (stepIndex + 1) * stride);
+      const swingStart = 0.58;
+      const swingProgress = phase <= swingStart ? 0 : smoothstep((phase - swingStart) / (1 - swingStart));
+      const plantedDistance = fromDistance + (toDistance - fromDistance) * swingProgress;
+      const swingPhase = phase <= swingStart ? 0 : (phase - swingStart) / (1 - swingStart);
+      const lift = Math.sin(swingPhase * Math.PI) * stepHeight * gaitEnvelope;
+      const lateral = side === 'left' ? -0.16 : 0.16;
+      const footWorld = startPosition.clone()
+        .add(direction.clone().multiplyScalar(plantedDistance))
+        .add(lateralWorld.clone().multiplyScalar(lateral));
+      footWorld.y = startPosition.y + 0.08 + lift;
+      const localTarget = footWorld.applyMatrix4(inverseCurrent).toArray() as Vec3;
+      solved = solveLegIK(solved, side, localTarget);
+    }
+    entity.character.pose = solved;
   }
 }
 
@@ -281,4 +342,67 @@ export function describeAction(action: ActionBlock, entities: Entity[]): string 
     case 'cameraDolly': return `${actor} → ${target ?? '전방'} 돌리 인`;
     case 'cameraOrbit': return `${actor} → ${target ?? '대상'} 오빗`;
   }
+}
+
+export interface ActionConflict {
+  actionId: string;
+  conflictingActionId: string;
+  resourceType: 'actor' | 'target';
+  resourceEntityId: string;
+}
+
+export function actionEndTime(action: ActionBlock): number {
+  return action.startTime + action.duration;
+}
+
+export function actionIntervalsOverlap(a: ActionBlock, b: ActionBlock): boolean {
+  return a.startTime < actionEndTime(b) - 1e-6 && b.startTime < actionEndTime(a) - 1e-6;
+}
+
+function exclusiveTargets(action: ActionBlock): string[] {
+  if ((action.type === 'pickUp' || action.type === 'putDown') && action.targetEntityId) return [action.targetEntityId];
+  return [];
+}
+
+export function findActionConflicts(actions: ActionBlock[], candidate: ActionBlock): ActionConflict[] {
+  if (!candidate.enabled) return [];
+  const conflicts: ActionConflict[] = [];
+  for (const other of actions) {
+    if (!other.enabled || other.id === candidate.id || !actionIntervalsOverlap(other, candidate)) continue;
+    if (other.actorEntityId === candidate.actorEntityId) {
+      conflicts.push({
+        actionId: candidate.id,
+        conflictingActionId: other.id,
+        resourceType: 'actor',
+        resourceEntityId: candidate.actorEntityId,
+      });
+      continue;
+    }
+    const otherTargets = new Set(exclusiveTargets(other));
+    const sharedTarget = exclusiveTargets(candidate).find((id) => otherTargets.has(id));
+    if (sharedTarget) {
+      conflicts.push({
+        actionId: candidate.id,
+        conflictingActionId: other.id,
+        resourceType: 'target',
+        resourceEntityId: sharedTarget,
+      });
+    }
+  }
+  return conflicts;
+}
+
+export function collectActionConflicts(actions: ActionBlock[]): ActionConflict[] {
+  const seen = new Set<string>();
+  const result: ActionConflict[] = [];
+  for (const action of actions) {
+    for (const conflict of findActionConflicts(actions, action)) {
+      const pair = [conflict.actionId, conflict.conflictingActionId].sort().join(':');
+      const key = `${pair}:${conflict.resourceType}:${conflict.resourceEntityId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(conflict);
+    }
+  }
+  return result;
 }

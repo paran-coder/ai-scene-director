@@ -1,0 +1,13 @@
+{
+  "generatedAt": "2026-07-13T02:37:25.664Z",
+  "eligible": false,
+  "applyRequested": false,
+  "sourceVersion": "1.0.0-rc.9",
+  "targetVersion": "1.0.0",
+  "releaseId": null,
+  "reasons": [
+    "릴리스 게이트가 ready가 아닙니다: conditional",
+    "플랫폼 릴리스 증거 무결성 검사가 통과하지 않았습니다.",
+    "검증된 릴리스 실행 ID가 없습니다."
+  ]
+}

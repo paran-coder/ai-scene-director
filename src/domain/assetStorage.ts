@@ -53,6 +53,21 @@ export async function hasAssetBlob(storageKey: string): Promise<boolean> {
   return Boolean(await getAssetBlob(storageKey));
 }
 
+
+export async function listAssetStorageKeys(): Promise<string[]> {
+  if (typeof indexedDB === 'undefined') return [...memoryStorage.keys()];
+  const db = await openDatabase();
+  try {
+    return await new Promise<string[]>((resolve, reject) => {
+      const request = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).getAllKeys();
+      request.onsuccess = () => resolve(request.result.map((key) => String(key)));
+      request.onerror = () => reject(request.error ?? new Error('에셋 저장소 목록을 읽지 못했습니다.'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
 export async function deleteAssetBlob(storageKey: string): Promise<void> {
   if (typeof indexedDB === 'undefined') { memoryStorage.delete(storageKey); return; }
   const db = await openDatabase();
@@ -78,4 +93,16 @@ export async function getAssetObjectUrl(storageKey: string): Promise<string | nu
   const url = URL.createObjectURL(blob);
   objectUrlCache.set(storageKey, url);
   return url;
+}
+
+
+export function clearAssetObjectUrl(storageKey: string): void {
+  const url = objectUrlCache.get(storageKey);
+  if (url) URL.revokeObjectURL(url);
+  objectUrlCache.delete(storageKey);
+}
+
+export function clearAllAssetObjectUrls(): void {
+  for (const url of objectUrlCache.values()) URL.revokeObjectURL(url);
+  objectUrlCache.clear();
 }

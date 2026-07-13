@@ -1,4 +1,4 @@
-import type { AssetLibraryCategory, AssetLibraryItem, EntityAssetData, Project } from './types.ts';
+import type { AssetLibraryCategory, AssetLibraryItem, EntityAssetData, HumanoidRigProfile, Project } from './types.ts';
 
 export function createAssetLibraryItem(input: {
   name: string;
@@ -8,6 +8,7 @@ export function createAssetLibraryItem(input: {
   category: AssetLibraryCategory;
   id?: string;
   createdAt?: string;
+  rig?: HumanoidRigProfile;
 }): AssetLibraryItem {
   const id = input.id ?? `asset-${crypto.randomUUID()}`;
   return {
@@ -20,6 +21,7 @@ export function createAssetLibraryItem(input: {
     storageKey: `glb:${id}`,
     createdAt: input.createdAt ?? new Date().toISOString(),
     originalFilename: input.originalFilename,
+    rig: input.rig ? structuredClone(input.rig) : undefined,
   };
 }
 

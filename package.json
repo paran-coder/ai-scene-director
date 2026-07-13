@@ -1,13 +1,28 @@
 {
   "name": "ai-scene-director-mvp",
   "private": true,
-  "version": "0.10.0",
+  "version": "1.0.0-rc.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test tests/*.test.ts"
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "desktop:dev": "npx @tauri-apps/cli@latest dev",
+    "desktop:build": "npx @tauri-apps/cli@latest build",
+    "desktop:check": "node scripts/check-desktop.mjs",
+    "verify:beta": "npm run verify:rc",
+    "verify:rc": "npm test && npm run desktop:check && npm run build && npm run release:check && npm run browser:smoke && npm run release:gate",
+    "release:check": "node scripts/release-preflight.mjs",
+    "fixtures:generate": "node scripts/generate-rig-fixtures.mjs",
+    "browser:smoke": "node scripts/browser-smoke.mjs",
+    "browser:smoke:strict": "node scripts/browser-smoke.mjs --strict",
+    "native:artifacts": "node scripts/native-artifact-check.mjs",
+    "release:gate": "node --experimental-strip-types scripts/release-gate.mjs",
+    "release:gate:strict": "node --experimental-strip-types scripts/release-gate.mjs --strict",
+    "native:smoke": "node scripts/native-runtime-smoke.mjs",
+    "release:promotion:check": "node scripts/promote-release.mjs",
+    "release:promote": "node scripts/promote-release.mjs --apply"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.6",
@@ -22,6 +37,7 @@
     "@types/react-dom": "^19.1.7",
     "@types/three": "^0.179.0",
     "@vitejs/plugin-react": "^5.0.2",
+    "esbuild": "^0.28.1",
     "typescript": "^5.9.2",
     "vite": "^7.1.3"
   }

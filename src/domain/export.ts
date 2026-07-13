@@ -4,10 +4,10 @@ import { resolveSceneAtTime } from './resolver.ts';
 import type { Entity, Project, Scene, Shot } from './types.ts';
 
 export interface ShotPackageManifest {
-  schemaVersion: '0.10.0';
+  schemaVersion: '1.0.0-rc.9';
   generatedAt: string;
   project: { id: string; name: string; revision: number };
-  scene: { id: string; name: string; environment: Scene['environment'] };
+  scene: { id: string; name: string; environment: Scene['environment']; referenceImages: Array<Omit<Scene['referenceImages'][number], 'dataUrl'>> };
   shot: {
     id: string;
     name: string;
@@ -19,6 +19,7 @@ export interface ShotPackageManifest {
     name: string;
     startTransform: Entity['transform'];
     endTransform: Entity['transform'];
+    settings?: Entity['camera'];
   } | null;
   entities: Array<{
     id: string;
@@ -113,10 +114,10 @@ export function buildShotPackageManifest(project: Project, scene: Scene, shot: S
   const endMap = new Map(end.map((entity) => [entity.id, entity]));
 
   return {
-    schemaVersion: '0.10.0',
+    schemaVersion: '1.0.0-rc.9',
     generatedAt: new Date().toISOString(),
     project: { id: project.id, name: project.name, revision: project.revision },
-    scene: { id: scene.id, name: scene.name, environment: structuredClone(scene.environment) },
+    scene: { id: scene.id, name: scene.name, environment: structuredClone(scene.environment), referenceImages: (scene.referenceImages ?? []).map(({ dataUrl: _dataUrl, ...image }) => structuredClone(image)) },
     shot: {
       id: shot.id,
       name: shot.name,
@@ -128,6 +129,7 @@ export function buildShotPackageManifest(project: Project, scene: Scene, shot: S
       name: cameraStart.name,
       startTransform: structuredClone(cameraStart.transform),
       endTransform: structuredClone(cameraEnd.transform),
+      settings: cameraStart.camera ? structuredClone(cameraStart.camera) : undefined,
     } : null,
     entities: start
       .filter((entity) => entity.type !== 'camera' && entity.type !== 'light')

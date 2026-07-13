@@ -1,3 +1,4 @@
+import { findActionConflicts } from './actions.ts';
 import type {
   AddActionOperation,
   AddEntityOperation,
@@ -19,6 +20,11 @@ import type {
   UpdateActionOperation,
   UpdateBaseEntityOperation,
   UpdateEntityOperation,
+  UpdateEntityDataOperation,
+  AddReferenceImageOperation,
+  UpdateReferenceImageOperation,
+  RemoveReferenceImageOperation,
+  UpdateAssetLibraryItemOperation,
   UpdateEntityAssetOperation,
   UpdateShotOperation,
 } from './types.ts';
@@ -58,6 +64,10 @@ function applyEntityOverride(project: Project, operation: UpdateEntityOperation,
         return entity.visible === value;
       case 'character.pose':
         return JSON.stringify(entity.character?.pose) === JSON.stringify(value);
+      case 'camera.settings':
+        return JSON.stringify(entity.camera) === JSON.stringify(value);
+      case 'light.settings':
+        return JSON.stringify(entity.light) === JSON.stringify(value);
     }
   })();
 
@@ -127,10 +137,38 @@ function applyRemoveEntity(project: Project, operation: RemoveEntityOperation, i
         ...structuredClone(restoredActions),
       ];
     });
+    for (const restoredImage of operation.referenceImages ?? []) {
+      const index = (scene.referenceImages ?? []).findIndex((item) => item.id === restoredImage.id);
+      if (index >= 0) scene.referenceImages[index] = structuredClone(restoredImage);
+      else scene.referenceImages.push(structuredClone(restoredImage));
+    }
+    for (const backup of operation.lightTargetBackups ?? []) {
+      const light = scene.entities.find((item) => item.id === backup.lightEntityId);
+      if (light && backup.baseLight) light.light = structuredClone(backup.baseLight);
+      for (const shot of scene.shots) {
+        const restored = backup.overridesByShot[shot.id] ?? [];
+        const restoredIds = new Set(restored.map((item) => item.id));
+        shot.overrides = [
+          ...shot.overrides.filter((item) => !restoredIds.has(item.id)),
+          ...structuredClone(restored),
+        ];
+      }
+    }
     return;
   }
   scene.entities = scene.entities.filter((entity) => entity.id !== operation.entity.id);
+  scene.referenceImages = (scene.referenceImages ?? []).map((image) => image.cameraEntityId === operation.entity.id ? { ...image, cameraEntityId: undefined } : image);
+  for (const light of scene.entities) {
+    if (light.type === 'light' && light.light?.targetEntityId === operation.entity.id) delete light.light.targetEntityId;
+  }
   scene.shots.forEach((shot) => {
+    shot.overrides = shot.overrides.map((override) => {
+      if (override.path !== 'light.settings') return override;
+      const value = structuredClone(override.value) as import('./types.ts').LightData;
+      if (value.targetEntityId !== operation.entity.id) return override;
+      delete value.targetEntityId;
+      return { ...override, value };
+    });
     shot.overrides = shot.overrides.filter((override) => override.entityId !== operation.entity.id);
     shot.relationships = shot.relationships.filter((relationship) => (
       relationship.sourceEntityId !== operation.entity.id && relationship.targetEntityId !== operation.entity.id
@@ -150,6 +188,46 @@ function applyUpdateBaseEntity(project: Project, operation: UpdateBaseEntityOper
   const value = inverse ? operation.previousValue : operation.nextValue;
   if (operation.path === 'name') entity.name = String(value);
   else entity[operation.path] = Boolean(value);
+}
+
+
+function applyUpdateEntityData(project: Project, operation: UpdateEntityDataOperation, inverse: boolean): void {
+  const scene = findScene(project, operation.sceneId);
+  const entity = scene.entities.find((item) => item.id === operation.entityId);
+  if (!entity) throw new Error(`Entity not found: ${operation.entityId}`);
+  if (entity.locked) throw new Error(`${entity.name} is locked`);
+  const value = structuredClone(inverse ? operation.previousValue : operation.nextValue);
+  if (operation.field === 'camera') {
+    if (entity.type !== 'camera') throw new Error('카메라 설정은 카메라 객체에만 적용할 수 있습니다.');
+    entity.camera = value as typeof entity.camera;
+  } else {
+    if (entity.type !== 'light') throw new Error('조명 설정은 조명 객체에만 적용할 수 있습니다.');
+    entity.light = value as typeof entity.light;
+  }
+}
+
+function applyAddReferenceImage(project: Project, operation: AddReferenceImageOperation, inverse: boolean): void {
+  const scene = findScene(project, operation.sceneId);
+  scene.referenceImages = scene.referenceImages ?? [];
+  if (inverse) scene.referenceImages = scene.referenceImages.filter((item) => item.id !== operation.image.id);
+  else if (!scene.referenceImages.some((item) => item.id === operation.image.id)) scene.referenceImages.push(structuredClone(operation.image));
+}
+
+function applyUpdateReferenceImage(project: Project, operation: UpdateReferenceImageOperation, inverse: boolean): void {
+  const scene = findScene(project, operation.sceneId);
+  scene.referenceImages = scene.referenceImages ?? [];
+  const image = structuredClone(inverse ? operation.previousImage : operation.nextImage);
+  const index = scene.referenceImages.findIndex((item) => item.id === image.id);
+  if (index < 0) throw new Error(`Reference image not found: ${image.id}`);
+  scene.referenceImages[index] = image;
+}
+
+function applyRemoveReferenceImage(project: Project, operation: RemoveReferenceImageOperation, inverse: boolean): void {
+  const scene = findScene(project, operation.sceneId);
+  scene.referenceImages = scene.referenceImages ?? [];
+  if (inverse) {
+    if (!scene.referenceImages.some((item) => item.id === operation.image.id)) scene.referenceImages.push(structuredClone(operation.image));
+  } else scene.referenceImages = scene.referenceImages.filter((item) => item.id !== operation.image.id);
 }
 
 function assertRelationshipEntities(project: Project, operation: AddRelationshipOperation | RemoveRelationshipOperation): void {
@@ -200,6 +278,8 @@ function assertActionEntities(project: Project, operation: AddActionOperation | 
   if (action.startTime < 0 || action.duration <= 0 || action.startTime + action.duration > shot.duration + 1e-6) {
     throw new Error('행동 시간이 현재 샷 범위를 벗어납니다.');
   }
+  const conflicts = findActionConflicts(shot.actions ?? [], action);
+  if (conflicts.length > 0) throw new Error('같은 객체를 사용하는 행동 시간이 겹칩니다.');
 }
 
 function applyAddAction(project: Project, operation: AddActionOperation, inverse: boolean): void {
@@ -271,6 +351,15 @@ function applyRemoveAssetLibraryItem(project: Project, operation: RemoveAssetLib
       entity.asset = next;
     }
   }));
+}
+
+
+function applyUpdateAssetLibraryItem(project: Project, operation: UpdateAssetLibraryItemOperation, inverse: boolean): void {
+  project.assetLibrary = project.assetLibrary ?? [];
+  const nextItem = structuredClone(inverse ? operation.previousItem : operation.nextItem);
+  const index = project.assetLibrary.findIndex((item) => item.id === nextItem.id);
+  if (index < 0) throw new Error(`Asset not found: ${nextItem.id}`);
+  project.assetLibrary[index] = nextItem;
 }
 
 function applyUpdateEntityAsset(project: Project, operation: UpdateEntityAssetOperation, inverse: boolean): void {
@@ -370,6 +459,18 @@ function applyOperation(project: Project, operation: Operation, inverse = false)
     case 'updateBaseEntity':
       applyUpdateBaseEntity(project, operation, inverse);
       return;
+    case 'updateEntityData':
+      applyUpdateEntityData(project, operation, inverse);
+      return;
+    case 'addReferenceImage':
+      applyAddReferenceImage(project, operation, inverse);
+      return;
+    case 'updateReferenceImage':
+      applyUpdateReferenceImage(project, operation, inverse);
+      return;
+    case 'removeReferenceImage':
+      applyRemoveReferenceImage(project, operation, inverse);
+      return;
     case 'addRelationship':
       applyAddRelationship(project, operation, inverse);
       return;
@@ -390,6 +491,9 @@ function applyOperation(project: Project, operation: Operation, inverse = false)
       return;
     case 'removeAssetLibraryItem':
       applyRemoveAssetLibraryItem(project, operation, inverse);
+      return;
+    case 'updateAssetLibraryItem':
+      applyUpdateAssetLibraryItem(project, operation, inverse);
       return;
     case 'updateEntityAsset':
       applyUpdateEntityAsset(project, operation, inverse);

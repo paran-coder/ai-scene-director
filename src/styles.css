@@ -621,3 +621,16 @@ kbd { display: inline-flex; align-items: center; min-height: 20px; padding: 1px 
   .session-event-list > div { grid-template-columns: 52px minmax(0, 1fr); }
   .session-event-list small { grid-column: 2; }
 }
+
+
+/* Front-view and first-use usability hotfix */
+.usage-button { border-color: #2563eb; background: #172554; color: #dbeafe; font-weight: 700; }
+.navigation-hint { color: #bae6fd; }
+.onboarding-card { width: min(620px, 94vw); }
+.onboarding-card p { min-height: 0; margin-bottom: 12px; }
+.onboarding-checklist { display: grid; gap: 8px; margin: 0; padding: 13px 16px 13px 34px; border: 1px solid #334155; border-radius: 10px; background: #0f172a; color: #dbeafe; font-size: 13px; line-height: 1.5; }
+.onboarding-checklist li::marker { color: #38bdf8; }
+@media (max-width: 760px) {
+  .viewport-toolbar { max-width: calc(100% - 24px); overflow-x: auto; }
+  .navigation-hint { max-width: calc(100% - 24px); white-space: normal; }
+}

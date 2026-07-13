@@ -30,6 +30,7 @@ import { validatePlatformReleaseEvidence, validateReleaseEvidenceMatrix } from '
 import { analyzeDirectorWorkflow, analyzeShotReadiness, buildFirstEditPlan } from '../src/domain/directorWorkflow.ts';
 import { buildCommandCatalog, searchCommands } from '../src/domain/commandPalette.ts';
 import { appendCreatorSessionEvent, createCreatorSession, sanitizeSessionMetadata, summarizeCreatorSession } from '../src/domain/sessionInsights.ts';
+import { computeFrontViewFrame } from '../src/domain/viewFraming.ts';
 
 
 function createRiggedGlbBlob(nodeNames: string[], animationNames: string[] = []): Blob {
@@ -1833,4 +1834,30 @@ test('RC9 릴리스 파이프라인은 증거 ID·체크섬 매니페스트와 1
   assert.ok(promote.includes("gate.status !== 'ready'"));
   assert.ok(promote.includes("gate.evidence?.validation?.status !== 'pass'"));
   assert.equal(packageJson.scripts['release:promotion:check'], 'node scripts/promote-release.mjs');
+});
+
+
+test('자유 시점 기본 프레임은 피사체의 정면인 -Z 쪽에 배치된다', () => {
+  const project = cloneSample();
+  const scene = project.scenes[0];
+  scene.entities.push({
+    id: 'back-wall-test', name: '거대한 뒷벽', type: 'prop',
+    transform: { position: [0, 3, 4], rotation: [0, 0, 0], scale: [20, 6, 0.2] },
+    visible: true, locked: true,
+    asset: { category: 'architecture', primitive: 'box', color: '#fff', material: 'matte', source: 'preset', tags: ['wall'] },
+  });
+  const frame = computeFrontViewFrame(scene.entities);
+  assert.ok(frame.position[2] < frame.target[2], '카메라는 피사체의 -Z 정면에 있어야 한다');
+  assert.ok(frame.target[2] < 2, '거대한 프리셋 뒷벽이 피사체 중심 계산을 가리지 않아야 한다');
+  assert.ok(frame.distance >= 5.5);
+});
+
+test('항상 접근 가능한 사용법과 정면 맞춤 UI를 제공한다', () => {
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const viewportSource = readFileSync(new URL('../src/components/Viewport.tsx', import.meta.url), 'utf8');
+  const onboardingSource = readFileSync(new URL('../src/components/Onboarding.tsx', import.meta.url), 'utf8');
+  assert.match(appSource, />사용법<\/button>/);
+  assert.match(viewportSource, /정면 맞춤/);
+  assert.match(onboardingSource, /왼쪽 드래그: 시점 회전/);
+  assert.match(onboardingSource, /AI 씬 생성으로 시작/);
 });

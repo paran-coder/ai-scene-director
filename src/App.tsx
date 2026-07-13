@@ -1077,7 +1077,7 @@ export default function App() {
           <button disabled={!recoveryCount} onClick={restoreLatestRecovery}>최근 복구 ({recoveryCount})</button>
           <button onClick={() => void cleanupLocalAssets()}>저장소 정리</button>
           <button onClick={() => setDoctorOpen(true)}>프로젝트 점검</button>
-          <button className="focus-essential" onClick={() => setOnboardingOpen(true)}>도움말</button>
+          <button className="usage-button focus-essential" title="처음부터 따라 하는 6단계 사용법" onClick={() => setOnboardingOpen(true)}>사용법</button>
           <button onClick={() => setSessionInsightsOpen(true)}>세션 기록</button>
           <button className="focus-essential focus-toggle" onClick={() => setFocusMode((value) => !value)}>{focusMode ? '집중 종료' : '집중 모드'}</button>
           <button className="bundle-button" disabled={isExporting} onClick={exportProjectBundle}>프로젝트 번들</button>

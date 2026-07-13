@@ -1,12 +1,14 @@
 import { Grid, Line, OrbitControls, TransformControls } from '@react-three/drei';
 import { Canvas, useFrame, useThree, type RootState } from '@react-three/fiber';
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
 import { Box3, Euler, Group, Matrix4, Mesh, MeshBasicMaterial, MeshDepthMaterial, Object3D, PerspectiveCamera, Quaternion, SpotLight, Vector3 } from 'three';
+import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { entityMaskColor } from '../domain/export';
 import { getAssetObjectUrl } from '../domain/assetStorage';
 import { createAsyncResourceCache } from '../domain/resourceCache';
 import { referenceImageUrl } from '../domain/referenceImages';
 import { viewportQualitySettings, type EffectiveRenderQuality } from '../domain/runtimeDiagnostics';
+import { computeFrontViewFrame, type ViewFrame } from '../domain/viewFraming';
 import type { ReferenceImage } from '../domain/types';
 import { calculateAnkleLocalPosition, calculateHandLocalPosition, calculateHumanoidJointLocalPositions, createNeutralPose } from '../domain/pose';
 import { applyHumanoidPoseToObject, collectHumanoidJointPositions } from '../domain/rigging';
@@ -636,6 +638,39 @@ function SceneLight({ entity, entities }: { entity: Entity; entities: Entity[] }
   return <directionalLight position={entity.transform.position} color={settings.color} intensity={settings.intensity} castShadow={settings.castShadow} />;
 }
 
+function FreeViewController({
+  frame,
+  frameKey,
+  resetToken,
+  enabled,
+  controlsRef,
+}: {
+  frame: ViewFrame;
+  frameKey: string;
+  resetToken: number;
+  enabled: boolean;
+  controlsRef: MutableRefObject<OrbitControlsImpl | null>;
+}) {
+  const camera = useThree((state) => state.camera);
+  const appliedKeyRef = useRef('');
+
+  useEffect(() => {
+    if (!enabled || !controlsRef.current) return;
+    const nextKey = `${frameKey}:${resetToken}`;
+    if (appliedKeyRef.current === nextKey) return;
+    camera.position.set(...frame.position);
+    camera.up.set(0, 1, 0);
+    controlsRef.current.target.set(...frame.target);
+    camera.lookAt(controlsRef.current.target);
+    camera.updateProjectionMatrix();
+    controlsRef.current.update();
+    controlsRef.current.saveState();
+    appliedKeyRef.current = nextKey;
+  }, [camera, controlsRef, enabled, frame, frameKey, resetToken]);
+
+  return null;
+}
+
 function ShotCameraController({ cameraEntity, enabled }: { cameraEntity?: Entity; enabled: boolean }) {
   const camera = useThree((state) => state.camera);
   useFrame(() => {
@@ -696,6 +731,8 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
   const playheadTime = useEditorStore((state) => state.playheadTime);
   const isPlaying = useEditorStore((state) => state.isPlaying);
   const [shotCameraView, setShotCameraView] = useState(false);
+  const [freeViewResetToken, setFreeViewResetToken] = useState(0);
+  const orbitControlsRef = useRef<OrbitControlsImpl | null>(null);
   const [captureRequest, setCaptureRequest] = useState<CaptureRequest | null>(null);
   const rendererRef = useRef<RootState | null>(null);
   const captureBusyRef = useRef(false);
@@ -715,6 +752,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
   const cameraEnabled = shotCameraView || captureActive;
   const sceneLights = entities.filter((entity) => entity.type === 'light' && entity.visible);
   const activeReferences = (scene.referenceImages ?? []).filter((image) => image.visible && (!image.cameraEntityId || image.cameraEntityId === activeCamera?.id));
+  const frontViewFrame = useMemo(() => computeFrontViewFrame(entities), [scene.id]);
 
   useImperativeHandle(ref, () => ({
     captureFrame(time, mode) {
@@ -772,7 +810,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
   return (
     <div className="viewport">
       <Canvas
-        camera={{ position: [0, 3.5, 7], fov: 48 }}
+        camera={{ position: [0, 2.4, -7], fov: 48 }}
         dpr={quality.dpr}
         gl={{ preserveDrawingBuffer: true, antialias: quality.antialias, powerPreference: quality.powerPreference }}
         onCreated={(state) => { rendererRef.current = state; }}
@@ -786,6 +824,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
         {!captureActive && quality.showInfiniteGrid && <Grid infiniteGrid fadeDistance={30} sectionColor="#57534e" cellColor="#292524" />}
         <DepthOverride enabled={renderMode === 'depth'} />
         <ShotCameraController cameraEntity={activeCamera} enabled={cameraEnabled} />
+        <FreeViewController frame={frontViewFrame} frameKey={scene.id} resetToken={freeViewResetToken} enabled={!cameraEnabled && !captureActive} controlsRef={orbitControlsRef} />
         {visibleEntities.map((entity) => (
           <SceneEntity
             key={`${entity.id}:${activeShotId}:${renderMode}`}
@@ -806,7 +845,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
         {!captureActive && transformMode === 'pose' && selected?.type === 'character' && legIkSide && !selected.locked && playheadTime === 0 && !isPlaying && (
           <LegIKTarget entity={selected} side={legIkSide} />
         )}
-        <OrbitControls makeDefault enabled={!cameraEnabled && !captureActive} />
+        <OrbitControls ref={orbitControlsRef} makeDefault enabled={!cameraEnabled && !captureActive} target={frontViewFrame.target} minDistance={1.2} maxDistance={80} />
       </Canvas>
 
       {!captureActive && shotCameraView && activeReferences.map((image) => (
@@ -819,6 +858,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
       <div className="viewport-toolbar" aria-label="변환 도구">
         <button className={!shotCameraView ? 'active' : ''} onClick={() => setShotCameraView(false)}>자유 시점</button>
         <button className={shotCameraView ? 'active' : ''} disabled={!activeCamera} onClick={() => setShotCameraView(true)}>샷 카메라</button>
+        <button title="장면 정면(-Z)에서 피사체가 보이도록 자유 시점을 초기화합니다." onClick={() => { setShotCameraView(false); setFreeViewResetToken((value) => value + 1); }}>정면 맞춤</button>
         <span className="toolbar-divider" />
         <button className={transformMode === 'translate' ? 'active' : ''} onClick={() => setTransformMode('translate')}>이동</button>
         <button className={transformMode === 'rotate' ? 'active' : ''} onClick={() => setTransformMode('rotate')}>회전</button>
@@ -842,6 +882,8 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
         <div className="viewport-hint">회전 링으로 관절을 돌리거나 분홍색 목표점을 끌어 {ikSide === 'left' ? '왼손' : '오른손'} IK를 조절하세요.</div>
       ) : transformMode === 'pose' && selectedJoint ? (
         <div className="viewport-hint">선택 관절의 회전 링을 직접 드래그해 포즈를 조절하세요.</div>
+      ) : !shotCameraView ? (
+        <div className="viewport-hint navigation-hint">왼쪽 드래그: 회전 · 오른쪽 드래그: 화면 이동 · 휠: 확대/축소 · 방향이 어긋나면 ‘정면 맞춤’</div>
       ) : null}
     </div>
   );

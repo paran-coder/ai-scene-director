@@ -30,3 +30,9 @@ npm ci
 npm test
 npm run build
 ```
+
+
+## Vercel 설치 오류 수정
+
+이 패키지는 `package-lock.json`의 패키지 주소를 공개 npm 레지스트리로 정리했습니다.
+Vercel 재배포 전에 `package.json`, `package-lock.json`, `vercel.json`을 반드시 최신 파일로 교체하세요.

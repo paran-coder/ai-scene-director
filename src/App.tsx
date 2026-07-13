@@ -1194,6 +1194,7 @@ export default function App() {
             <button className="flow-action focus-essential" onClick={() => executeCommand('openSceneGenerator')}><i>1</i><span>장면 만들기</span></button>
             <button className="flow-action focus-essential" onClick={selectPrimarySubject}><i>2</i><span>장면 수정하기</span></button>
             <button className="flow-action export primary-export focus-essential" disabled={isExporting} onClick={requestAIExport}><i>3</i><span>{isExporting ? '생성 중…' : 'AI용 내보내기'}</span></button>
+            <button className="export-guide-header-button focus-essential" type="button" data-guide-entry="header" title="내보낸 파일을 이미지·영상 생성 AI에서 사용하는 방법" aria-label="AI용 내보내기 사용법 열기" onClick={openAIExportGuide}><span className="export-guide-icon" aria-hidden="true">?</span><span className="export-guide-label"><span className="export-guide-label-prefix">내보내기 </span>사용법</span></button>
           </div>
           <button className="command-search-button focus-essential" onClick={openCommandPalette}><span>명령 검색</span><kbd>⌘K</kbd></button>
           <button className="usage-button focus-essential" title="장면 만들기부터 AI용 내보내기까지" onClick={() => setOnboardingOpen(true)}>사용법</button>

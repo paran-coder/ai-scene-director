@@ -255,6 +255,30 @@ try {
   if (!interaction?.commandPaletteOpen || interaction.commandCount < 1) throw Object.assign(new Error('Ctrl/Cmd+K 명령 검색 상호작용이 브라우저에서 동작하지 않았습니다.'), { appFailure: true, pageState: state });
   await cdp.send('Runtime.evaluate', { expression: `document.querySelector('.command-palette-search button')?.click()` });
   await new Promise((resolve) => setTimeout(resolve, 120));
+  const headerGuideEntryResult = await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const exportButton = document.querySelector('.primary-export');
+      const guideButton = document.querySelector('.export-guide-header-button');
+      const guideLabel = guideButton?.querySelector('.export-guide-label');
+      const exportRect = exportButton?.getBoundingClientRect();
+      const guideRect = guideButton?.getBoundingClientRect();
+      const buttonStyle = guideButton ? getComputedStyle(guideButton) : null;
+      const labelStyle = guideLabel ? getComputedStyle(guideLabel) : null;
+      return {
+        exists: Boolean(guideButton),
+        text: guideButton?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+        visible: Boolean(guideRect && guideRect.width >= 70 && guideRect.height >= 30 && buttonStyle?.display !== 'none' && buttonStyle?.visibility !== 'hidden' && Number(buttonStyle?.opacity ?? 1) > 0),
+        labelVisible: Boolean(guideLabel && labelStyle?.display !== 'none' && labelStyle?.visibility !== 'hidden'),
+        adjacent: Boolean(exportRect && guideRect && guideRect.left >= exportRect.right - 1 && guideRect.left - exportRect.right <= 12),
+        width: guideRect?.width ?? 0,
+      };
+    })()`,
+    returnByValue: true,
+  });
+  const headerGuideEntry = headerGuideEntryResult?.result?.value;
+  if (!headerGuideEntry?.exists || !headerGuideEntry.visible || !headerGuideEntry.labelVisible || !headerGuideEntry.adjacent || !String(headerGuideEntry.text).includes('사용법')) {
+    throw Object.assign(new Error('헤더의 내보내기 사용법 버튼이 보이지 않거나 AI용 내보내기 바로 오른쪽에 배치되지 않았습니다.'), { appFailure: true, pageState: state, headerGuideEntry });
+  }
   await cdp.send('Runtime.evaluate', { expression: `document.querySelector('.primary-export')?.click()` });
   await new Promise((resolve) => setTimeout(resolve, 180));
   const exportReviewResult = await cdp.send('Runtime.evaluate', {
@@ -266,7 +290,9 @@ try {
   const exportPreview = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   const exportPreviewName = notebookProfile ? 'ai-export-preview-notebook.png' : 'ai-export-preview.png';
   await writeFile(new URL(`../dist/${exportPreviewName}`, import.meta.url), Buffer.from(exportPreview.data, 'base64'));
-  await cdp.send('Runtime.evaluate', { expression: `document.querySelector('.ai-export-guide-link')?.click()` });
+  await cdp.send('Runtime.evaluate', { expression: `document.querySelector('.ai-export-close')?.click()` });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await cdp.send('Runtime.evaluate', { expression: `document.querySelector('.export-guide-header-button')?.click()` });
   await new Promise((resolve) => setTimeout(resolve, 180));
   const exportGuideResult = await cdp.send('Runtime.evaluate', {
     expression: `(() => { const guide = document.querySelector('[role="dialog"][aria-labelledby="ai-export-guide-title"]'); const text = guide?.innerText ?? ''; return { open: Boolean(guide), hasQuickStart: text.includes('기준 이미지와 최종 프롬프트'), hasImageGuide: text.includes('이미지 생성용'), hasVideoGuide: text.includes('영상 생성용'), hasComfyGuide: text.includes('ComfyUI'), fileRows: guide?.querySelectorAll('.guide-file-row').length ?? 0 }; })()`,

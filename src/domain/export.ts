@@ -4,7 +4,7 @@ import { resolveSceneAtTime } from './resolver.ts';
 import type { Entity, Project, Scene, Shot } from './types.ts';
 
 export interface ShotPackageManifest {
-  schemaVersion: '1.0.0-rc.11';
+  schemaVersion: '1.0.0-rc.12';
   generatedAt: string;
   project: { id: string; name: string; revision: number };
   scene: { id: string; name: string; environment: Scene['environment']; referenceImages: Array<Omit<Scene['referenceImages'][number], 'dataUrl'>> };
@@ -114,7 +114,7 @@ export function buildShotPackageManifest(project: Project, scene: Scene, shot: S
   const endMap = new Map(end.map((entity) => [entity.id, entity]));
 
   return {
-    schemaVersion: '1.0.0-rc.11',
+    schemaVersion: '1.0.0-rc.12',
     generatedAt: new Date().toISOString(),
     project: { id: project.id, name: project.name, revision: project.revision },
     scene: { id: scene.id, name: scene.name, environment: structuredClone(scene.environment), referenceImages: (scene.referenceImages ?? []).map(({ dataUrl: _dataUrl, ...image }) => structuredClone(image)) },

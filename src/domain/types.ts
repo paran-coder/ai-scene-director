@@ -1,6 +1,6 @@
 export type Vec3 = [number, number, number];
 
-export const CURRENT_SCHEMA_VERSION = '1.0.0-rc.15' as const;
+export const CURRENT_SCHEMA_VERSION = '1.0.0-rc.16' as const;
 
 export interface Transform {
   position: Vec3;

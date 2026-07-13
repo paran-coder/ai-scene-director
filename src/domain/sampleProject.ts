@@ -3,7 +3,7 @@ import type { Project } from './types.ts';
 
 export const sampleProject: Project = {
   id: 'project-001',
-  schemaVersion: '1.0.0-rc.15',
+  schemaVersion: '1.0.0-rc.16',
   name: '카페 대화 장면',
   revision: 1,
   activeSceneId: 'scene-001',

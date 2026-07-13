@@ -204,7 +204,7 @@ const RAD_TO_DEG = 180 / Math.PI;
 const DEG_TO_RAD = Math.PI / 180;
 
 const LIGHT_CONTROL_CAPABILITIES = {
-  directional: { range: false, angle: false, target: false, shadow: true, note: '방향광은 장면 전체로 평행하게 비추므로 범위와 각도는 적용되지 않습니다.' },
+  directional: { range: false, angle: false, target: false, shadow: true, note: '방향광은 장면 전체로 평행하게 비추므로 범위와 각도는 적용되지 않습니다. 회전으로 조사 방향을 조절하세요.' },
   point: { range: true, angle: false, target: false, shadow: true, note: '포인트광은 사방으로 퍼지므로 각도는 적용되지 않습니다. 범위로 도달 거리를 조절하세요.' },
   spot: { range: true, angle: true, target: true, shadow: true, note: '스포트라이트는 범위·각도·조명 대상을 모두 사용합니다.' },
   ambient: { range: false, angle: false, target: false, shadow: false, note: '환경광은 장면 전체 밝기만 보정하므로 범위, 각도, 그림자는 적용되지 않습니다.' },

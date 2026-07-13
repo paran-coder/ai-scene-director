@@ -1,7 +1,7 @@
 import { Grid, Line, OrbitControls, TransformControls } from '@react-three/drei';
-import { Canvas, useFrame, useThree, type RootState } from '@react-three/fiber';
+import { Canvas, useFrame, useThree, type RootState, type ThreeEvent } from '@react-three/fiber';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
-import { Box3, Euler, Group, Matrix4, Mesh, MeshBasicMaterial, MeshDepthMaterial, Object3D, PerspectiveCamera, Quaternion, SpotLight, Vector3 } from 'three';
+import { Box3, Euler, Group, Matrix4, Mesh, MeshBasicMaterial, MeshDepthMaterial, Object3D, PerspectiveCamera, Plane, Quaternion, SpotLight, DirectionalLight, Vector3 } from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { entityMaskColor } from '../domain/export';
 import { getAssetObjectUrl } from '../domain/assetStorage';
@@ -33,6 +33,16 @@ interface CaptureRequest {
 
 const NAVIGATION_HINT_STORAGE_KEY = 'ai-scene-director.viewport.navigationHintCollapsed';
 const VIEWPORT_ASSIST_LIGHT_STORAGE_KEY = 'ai-scene-director.viewport.assistLightEnabled';
+const LIGHT_KIND_LABELS = { directional: '방향광', point: '포인트광', spot: '스포트라이트', ambient: '환경광' } as const;
+
+function describeSelectedLight(entity: Entity): string {
+  const light = entity.light;
+  if (!light) return '';
+  if (light.kind === 'ambient') return `${LIGHT_KIND_LABELS.ambient} · 장면 전체`;
+  if (light.kind === 'directional') return `${LIGHT_KIND_LABELS.directional} · 방향 가이드`;
+  if (light.kind === 'spot') return `${LIGHT_KIND_LABELS.spot} · 범위 ${light.range.toFixed(1)}m · 각도 ${(light.angle * 180 / Math.PI).toFixed(0)}°`;
+  return `${LIGHT_KIND_LABELS.point} · 범위 ${light.range.toFixed(1)}m`;
+}
 
 function SurfaceMaterial({ color, mode, wireframe = false, emissive = false }: { color: string; mode: CaptureRenderMode; wireframe?: boolean; emissive?: boolean }) {
   if (mode !== 'beauty') return <meshBasicMaterial color={color} wireframe={wireframe} />;
@@ -408,22 +418,43 @@ function SceneEntity({
   relationshipControlled,
   renderMode,
   interactive,
+  controlsRef,
 }: {
   entity: Entity;
   transformMode: TransformMode;
   relationshipControlled: boolean;
   renderMode: CaptureRenderMode;
   interactive: boolean;
+  controlsRef: MutableRefObject<OrbitControlsImpl | null>;
 }) {
   const objectRef = useRef<Group>(null);
   const selectedEntityId = useEditorStore((state) => state.selectedEntityId);
   const selectedJoint = useEditorStore((state) => state.selectedJoint);
   const selectEntity = useEditorStore((state) => state.selectEntity);
   const setSelectedJoint = useEditorStore((state) => state.setSelectedJoint);
+  const setTransformMode = useEditorStore((state) => state.setTransformMode);
   const updateSelectedTransform = useEditorStore((state) => state.updateSelectedTransform);
+  const camera = useThree((state) => state.camera);
+  const directLightDragRef = useRef<{ pointerId: number; plane: Plane; offset: Vector3 } | null>(null);
   const isSelected = interactive && selectedEntityId === entity.id;
+  const canDirectDragLight = isSelected && entity.type === 'light' && !entity.locked && !relationshipControlled;
 
   if (!entity.visible) return null;
+
+  const finishDirectLightDrag = (event: ThreeEvent<PointerEvent>) => {
+    const drag = directLightDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    try {
+      const pointerTarget = event.nativeEvent.target;
+      if (pointerTarget instanceof Element && pointerTarget.hasPointerCapture(event.pointerId)) pointerTarget.releasePointerCapture(event.pointerId);
+    } catch { /* pointer capture can already be released */ }
+    directLightDragRef.current = null;
+    if (controlsRef.current) controlsRef.current.enabled = true;
+    document.body.style.cursor = '';
+    const target = objectRef.current;
+    if (target) updateSelectedTransform('transform.position', target.position.toArray() as Vec3);
+  };
 
   const object = (
     <group
@@ -435,6 +466,33 @@ function SceneEntity({
         event.stopPropagation();
         selectEntity(entity.id);
       } : undefined}
+      onPointerDown={canDirectDragLight ? (event) => {
+        if (event.button !== 0) return;
+        const target = objectRef.current;
+        if (!target) return;
+        event.stopPropagation();
+        event.nativeEvent.preventDefault();
+        const planeNormal = camera.getWorldDirection(new Vector3()).normalize();
+        const plane = new Plane().setFromNormalAndCoplanarPoint(planeNormal, target.position);
+        const hit = new Vector3();
+        if (!event.ray.intersectPlane(plane, hit)) return;
+        directLightDragRef.current = { pointerId: event.pointerId, plane, offset: target.position.clone().sub(hit) };
+        const pointerTarget = event.nativeEvent.target;
+        if (pointerTarget instanceof Element) pointerTarget.setPointerCapture(event.pointerId);
+        if (controlsRef.current) controlsRef.current.enabled = false;
+        if (transformMode !== 'translate') setTransformMode('translate');
+        document.body.style.cursor = 'grabbing';
+      } : undefined}
+      onPointerMove={canDirectDragLight ? (event) => {
+        const drag = directLightDragRef.current;
+        const target = objectRef.current;
+        if (!drag || drag.pointerId !== event.pointerId || !target) return;
+        event.stopPropagation();
+        const hit = new Vector3();
+        if (event.ray.intersectPlane(drag.plane, hit)) target.position.copy(hit.add(drag.offset));
+      } : undefined}
+      onPointerUp={canDirectDragLight ? finishDirectLightDrag : undefined}
+      onPointerCancel={canDirectDragLight ? finishDirectLightDrag : undefined}
     >
       <EntityShape
         entity={entity}
@@ -620,28 +678,35 @@ function SelectedLightGuide({ entity, targetEntity }: { entity: Entity; targetEn
   }, [entity.transform.position, entity.transform.rotation, settings.kind, targetEntity?.transform.position]);
   if (settings.kind === 'ambient') return null;
   const range = Math.max(0.25, settings.range);
-  const guideMaterial = <meshBasicMaterial color={settings.color} transparent opacity={0.22} wireframe depthTest={false} />;
 
   if (settings.kind === 'point') {
+    const ringPoints: Vec3[] = Array.from({ length: 65 }, (_, index) => {
+      const angle = (index / 64) * Math.PI * 2;
+      return [Math.cos(angle) * range, Math.sin(angle) * range, 0];
+    });
     return (
       <group position={entity.transform.position} renderOrder={20}>
-        <mesh>{/* Range is the actual distance used by Three.js pointLight. */}
-          <sphereGeometry args={[range, 28, 18]} />
-          {guideMaterial}
-        </mesh>
+        <Line points={ringPoints} color={settings.color} lineWidth={1.35} depthTest={false} />
+        <group rotation={[Math.PI / 2, 0, 0]}><Line points={ringPoints} color={settings.color} lineWidth={1.35} depthTest={false} /></group>
+        <group rotation={[0, Math.PI / 2, 0]}><Line points={ringPoints} color={settings.color} lineWidth={1.35} depthTest={false} /></group>
       </group>
     );
   }
 
   const directionLength = settings.kind === 'directional' ? Math.max(4, Math.min(range, 14)) : range;
   if (settings.kind === 'directional') {
+    const arrowOffsets = [-0.34, 0, 0.34];
     return (
       <group position={entity.transform.position} quaternion={guideQuaternion} renderOrder={20}>
-        <Line points={[[0, 0, 0], [0, 0, -directionLength]]} color={settings.color} lineWidth={1.5} depthTest={false} />
-        <mesh position={[0, 0, -directionLength]} rotation={[-Math.PI / 2, 0, 0]}>
-          <coneGeometry args={[0.18, 0.5, 12]} />
-          <meshBasicMaterial color={settings.color} transparent opacity={0.65} depthTest={false} />
-        </mesh>
+        {arrowOffsets.map((offset) => (
+          <group key={offset} position={[offset, 0, 0]}>
+            <Line points={[[0, 0, 0], [0, 0, -directionLength]]} color={settings.color} lineWidth={1.6} depthTest={false} />
+            <mesh position={[0, 0, -directionLength]} rotation={[-Math.PI / 2, 0, 0]}>
+              <coneGeometry args={[0.16, 0.46, 12]} />
+              <meshBasicMaterial color={settings.color} transparent opacity={0.78} depthTest={false} />
+            </mesh>
+          </group>
+        ))}
       </group>
     );
   }
@@ -662,7 +727,6 @@ function SelectedLightGuide({ entity, targetEntity }: { entity: Entity; targetEn
     </group>
   );
 }
-
 
 function TargetedSpotLight({ entity, targetEntity }: { entity: Entity; targetEntity?: Entity }) {
   const settings = entity.light!;
@@ -687,13 +751,33 @@ function TargetedSpotLight({ entity, targetEntity }: { entity: Entity; targetEnt
   );
 }
 
+function OrientedDirectionalLight({ entity }: { entity: Entity }) {
+  const settings = entity.light!;
+  const lightRef = useRef<DirectionalLight>(null);
+  const targetObject = useMemo(() => new Object3D(), []);
+  useFrame(() => {
+    const light = lightRef.current;
+    if (!light) return;
+    const forward = new Vector3(0, 0, -1).applyEuler(new Euler(...entity.transform.rotation, 'XYZ'));
+    targetObject.position.set(...entity.transform.position).add(forward);
+    targetObject.updateMatrixWorld();
+    light.target = targetObject;
+  });
+  return (
+    <>
+      <primitive object={targetObject} />
+      <directionalLight ref={lightRef} position={entity.transform.position} color={settings.color} intensity={settings.intensity} castShadow={settings.castShadow} />
+    </>
+  );
+}
+
 function SceneLight({ entity, entities }: { entity: Entity; entities: Entity[] }) {
   const settings = entity.light ?? { kind: 'directional' as const, color: '#fff4d6', intensity: 2, range: 12, angle: Math.PI / 4, castShadow: true };
   if (!entity.visible) return null;
   if (settings.kind === 'ambient') return <ambientLight color={settings.color} intensity={settings.intensity} />;
   if (settings.kind === 'point') return <pointLight position={entity.transform.position} color={settings.color} intensity={settings.intensity} distance={settings.range} castShadow={settings.castShadow} />;
   if (settings.kind === 'spot') return <TargetedSpotLight entity={{ ...entity, light: settings }} targetEntity={entities.find((item) => item.id === settings.targetEntityId)} />;
-  return <directionalLight position={entity.transform.position} color={settings.color} intensity={settings.intensity} castShadow={settings.castShadow} />;
+  return <OrientedDirectionalLight entity={{ ...entity, light: settings }} />;
 }
 
 function FreeViewController({
@@ -889,6 +973,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
   });
   const navigationHintVisible = !captureActive && playheadTime === 0 && transformMode !== 'pose' && !shotCameraView;
   const editingLightAssist = renderMode === 'beauty' && !captureActive && viewportAssistLightEnabled;
+  const selectedLightSummary = selected?.type === 'light' ? describeSelectedLight(selected) : '';
 
   return (
     <div className="viewport">
@@ -917,6 +1002,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
             renderMode={renderMode}
             interactive={!captureActive}
             relationshipControlled={Boolean(findControllingRelationship(shot.relationships, entity.id)) || playheadTime > 0 || isPlaying}
+            controlsRef={orbitControlsRef}
           />
         ))}
         {!captureActive && renderMode === 'beauty' && selected?.type === 'light' && (
@@ -969,6 +1055,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
 
       <div className="viewport-badge">
         {shotCameraView ? '샷 카메라' : '자유 시점'} · {quality.profile} · 선택: {selected?.name ?? '없음'} · Shot: {shot.name}
+        {selectedLightSummary ? ` · ${selectedLightSummary}` : ''}
         {transformMode === 'pose' && selectedJoint ? ` · 관절: ${selectedJoint}` : ''}
         {selected && findControllingRelationship(shot.relationships, selected.id) ? ' · 관계 제어 중' : ''}
         {playheadTime > 0 ? ` · ${playheadTime.toFixed(2)}초 미리보기` : ''}
@@ -983,6 +1070,8 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(function Viewp
         <div className="viewport-hint"><p>회전 링으로 관절을 돌리거나 분홍색 목표점을 끌어 {ikSide === 'left' ? '왼손' : '오른손'} IK를 조절하세요.</p></div>
       ) : transformMode === 'pose' && selectedJoint ? (
         <div className="viewport-hint"><p>선택 관절의 회전 링을 직접 드래그해 포즈를 조절하세요.</p></div>
+      ) : selected?.type === 'light' && !shotCameraView ? (
+        <div className="viewport-hint"><p>조명 구체를 직접 드래그하면 화면 기준으로 이동합니다. 정확한 축 이동은 X/Y/Z 핸들을 사용하세요.</p></div>
       ) : navigationHintVisible && !navigationHintCollapsed ? (
         <div className="viewport-hint navigation-hint">
           <p>왼쪽 드래그: 회전 · 오른쪽 드래그: 화면 이동 · 휠: 확대/축소 · 방향이 어긋나면 ‘정면 맞춤’</p>

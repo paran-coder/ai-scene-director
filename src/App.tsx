@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import { Viewport, type CaptureRenderMode, type ViewportHandle } from './components/Viewport';
 import { Onboarding, shouldShowOnboarding } from './components/Onboarding';
 import { DirectorWorkflowPanel } from './components/DirectorWorkflowPanel';
@@ -1727,6 +1728,7 @@ export default function App() {
           {message}<span>×</span>
         </button>
       )}
+      <Analytics />
     </main>
   );
 }
